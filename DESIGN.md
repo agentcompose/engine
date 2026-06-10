@@ -77,7 +77,7 @@ Engine.resume(runId, opts): AsyncIterable<EngineEvent>;
 | Decision | Choice | Why |
 |---|---|---|
 | **Planner is the seam** | `Planner.next(goal, ctx)`, re-entrant | One loop covers static workflows and dynamic agents; swapping the planner is the only change between them. |
-| **Plan = variable-ref DAG** | steps reference prior outputs as `#id` | Proven shape (ReWOO/LLMCompiler). Dependencies fall out of the refs, so the executor can parallelize ready steps for free. |
+| **Plan = variable-ref DAG** | steps reference prior outputs as `#id` | Proven shape (ReWOO/LLMCompiler). Dependencies fall out of the refs, so the executor *can* parallelize ready steps (deferred — execution is sequential in dependency order today). |
 | **Engine surface** | library API first; `asAgent()` later | Prove the API before wrapping the engine as an agent. The wrapper is thin and recursive once the core works. |
 | **State in 4 layers** | working / durable / memory / event-log, separated | A single transcript bloats and rots; separation keeps runs inspectable, recoverable, and cheap on context. |
 | **Durable + resumable** | checkpoint per step; `run` + `resume` | This is what separates a product from a demo: fail on step 7, resume from step 7 — and survive long waits for human input. |

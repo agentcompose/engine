@@ -8,7 +8,7 @@
 //
 // Scope of this implementation (the durable deterministic slice) and deferrals are
 // documented in DESIGN.md and noted inline where relevant.
-import { AgentError, JsonRpcCodes, toRpcError } from "@agentcompose/sdk";
+import { AgentError, JsonRpcCodes, ErrorCodes, toRpcError } from "@agentcompose/sdk";
 import type { Part, RpcError } from "@agentcompose/sdk";
 import type { EngineEvent, Snapshot, Step } from "./types.ts";
 import { RunContext } from "./context.ts";
@@ -79,6 +79,8 @@ export class Engine {
     const ctx = new RunContext(runId, goal);
     // Checkpoint the initial state so a crash before step 1 is still resumable.
     await this.#checkpoints.save(runId, ctx.snapshot("running"));
+    // Surface the (possibly generated) runId so the caller can resume()/snapshot() it.
+    yield { type: "run-started", runId };
     yield* this.#drive(ctx, opts);
   }
 
@@ -98,6 +100,7 @@ export class Engine {
       .filter(([, ok]) => ok)
       .map(([id]) => id);
     const ctx = RunContext.from(snap, approved);
+    yield { type: "run-started", runId };
     yield* this.#drive(ctx, opts);
   }
 
@@ -106,6 +109,17 @@ export class Engine {
   async *#drive(ctx: RunContext, opts: RunOptions & ResumeOptions): AsyncGenerator<EngineEvent> {
     const { signal, onApproval } = opts;
     try {
+      // Honor a pinned, human-approved suspension first: run exactly the step that was
+      // reviewed, not one re-derived this round (a non-deterministic planner could drift
+      // under the same id, executing un-reviewed work behind an approval). See DESIGN.md.
+      const pin = ctx.pending;
+      if (pin?.kind === "approval" && pin.proposed && ctx.approved.has(pin.stepId) && !ctx.has(pin.stepId)) {
+        ctx.pending = undefined;
+        yield { type: "plan", steps: [{ id: pin.proposed.id, agent: pin.proposed.agent }] };
+        yield* this.#exec(pin.proposed, ctx, signal);
+        await this.#checkpoints.save(ctx.runId, ctx.snapshot("running"));
+      }
+
       // Re-entrant planner loop. authoredPlan returns the full DAG once, then done;
       // a dynamic planner can return one step per round (ReAct) — same loop.
       for (;;) {
@@ -145,10 +159,7 @@ export class Engine {
         return;
       }
       const error = err instanceof StepFailed ? err.error : toRpcError(err);
-      await this.#checkpoints.save(ctx.runId, ctx.snapshot("failed", { result: undefined }));
-      // Persist the error onto the failed snapshot for later inspection.
-      const failed = ctx.snapshot("failed");
-      await this.#checkpoints.save(ctx.runId, { ...failed, error });
+      await this.#checkpoints.save(ctx.runId, { ...ctx.snapshot("failed"), error });
       yield { type: "error", error };
     }
   }
@@ -162,7 +173,18 @@ export class Engine {
     const verdict = await this.#governor(step, ctx);
 
     if (verdict.decision === "allow") return step;
-    if (verdict.decision === "rewrite") return verdict.step;
+    if (verdict.decision === "rewrite") {
+      // A rewrite runs after ordering, so it must not change identity or it would
+      // escape the computed dependency order. New step-refs must already be satisfied
+      // (resolveBindings throws otherwise) — documented constraint.
+      if (verdict.step.id !== step.id) {
+        throw new AgentError(
+          JsonRpcCodes.InvalidParams,
+          `Governor rewrite must preserve step id ("${step.id}" → "${verdict.step.id}").`,
+        );
+      }
+      return verdict.step;
+    }
     if (verdict.decision === "block") {
       const error: RpcError = { code: JsonRpcCodes.InvalidParams, message: `Step "${step.id}" blocked by policy: ${verdict.reason}` };
       yield { type: "step-failed", stepId: step.id, error };
@@ -185,7 +207,11 @@ export class Engine {
       return "blocked";
     }
     // Durable HITL: suspend to the checkpoint store and wait for resume + approval.
-    await this.#checkpoints.save(ctx.runId, ctx.snapshot("suspended", { pending: { kind: "approval", stepId: step.id } }));
+    // Pin the exact proposed step so resume runs what was reviewed (not a re-derivation).
+    await this.#checkpoints.save(
+      ctx.runId,
+      ctx.snapshot("suspended", { pending: { kind: "approval", stepId: step.id, proposed: step } }),
+    );
     yield { type: "suspended", reason: { kind: "approval", stepId: step.id } };
     return "suspend";
   }
@@ -195,10 +221,11 @@ export class Engine {
     const client = this.#registry.client(step.agent);
     yield { type: "step-started", stepId: step.id, agent: step.agent };
 
-    // Sequential execution means per-step configure is safe on a shared client.
-    // Deferred: concurrent steps reusing one agent with different configs need
-    // per-use client instances (the spec models a configured instance).
-    if (step.config) await client.configure(step.config);
+    // Reset to declared defaults each step, then layer this step's config. Without the
+    // reset, a prior step's config would leak onto a later step that shares the agent
+    // (the registry holds one shared client). Sequential execution makes this safe;
+    // concurrent reuse with differing configs would need per-use client instances.
+    await client.configure(step.config ?? {});
 
     const input = resolveBindings(step.input, ctx);
     const task = await client.submit(input);
@@ -215,7 +242,19 @@ export class Engine {
         if (ev.type === "progress") yield { type: "progress", stepId: step.id, percent: ev.percent, message: ev.message };
         else if (ev.type === "message") yield { type: "message", stepId: step.id, delta: ev.delta };
         else if (ev.type === "artifact") yield { type: "artifact", stepId: step.id, artifact: ev.artifact };
-        // status/result/error are read authoritatively from the final task below.
+        else if (ev.type === "status" && ev.state === "input-required") {
+          // A sub-agent asking for input would otherwise hang this loop forever (the SDK
+          // event stream only closes on a terminal state). Fail fast and cancel the child.
+          // Deferred: bridging child input upward (durable, cross-process) — see DESIGN.md.
+          await client.cancel(task.id).catch(() => {});
+          const error: RpcError = {
+            code: ErrorCodes.CapabilityNotSupported,
+            message: `Step "${step.id}" agent "${step.agent}" requested input; nested input-required is not yet supported.`,
+          };
+          yield { type: "step-failed", stepId: step.id, error };
+          throw new StepFailed(error);
+        }
+        // result/error are read authoritatively from the final task below.
       }
     } finally {
       if (signal && onAbort) signal.removeEventListener("abort", onAbort);

@@ -35,8 +35,10 @@ export interface Plan {
 /** Lifecycle of a run. Mirrors the spec's task states where they overlap. */
 export type RunStatus = "running" | "suspended" | "completed" | "failed" | "canceled";
 
-/** Why a suspended run is waiting. Currently only human approval of a step. */
-export type Pending = { kind: "approval"; stepId: string };
+/** Why a suspended run is waiting. Currently only human approval of a step.
+ *  `proposed` pins the exact reviewed step so resume executes *that*, not a freshly
+ *  re-derived one (a non-deterministic planner could otherwise drift under the same id). */
+export type Pending = { kind: "approval"; stepId: string; proposed?: Step };
 
 /**
  * The complete, serializable state needed to resume a run in a fresh process.
@@ -55,6 +57,7 @@ export interface Snapshot {
 
 /** Events streamed from a run. The orchestration-level event log. */
 export type EngineEvent =
+  | { type: "run-started"; runId: string }
   | { type: "plan"; steps: { id: string; agent: string }[] }
   | { type: "step-started"; stepId: string; agent: string }
   | { type: "progress"; stepId: string; percent?: number; message?: string }

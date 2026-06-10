@@ -3,6 +3,11 @@
 > Working notes from a code review of `@agentcompose/engine` (the brain + chassis).
 > Status at review: spec validates, SDK 8/8, engine 15/15, `tsc` clean.
 > Nothing here is committed — it's a punch-list, ordered by severity.
+>
+> **RESOLUTION (2026-06-10):** all nine verified against the code and addressed.
+> Engine now 23/23, `tsc` clean. Per-item resolution notes inline (✅). Deferred
+> follow-ups (full child-input propagation, parallelism, real persistence) remain on
+> the roadmap in DESIGN.md.
 
 ---
 
@@ -33,6 +38,11 @@ the full step on `Pending`, or add `proposed?: Step` to the snapshot) and execut
 *that exact step* on resume instead of re-deriving it. Same reasoning applies to
 crash-resume in the middle of a dynamic plan.
 
+**✅ Resolved.** `Pending` now carries `proposed?: Step`; the suspend checkpoint pins
+the reviewed step, and `#drive` executes that exact step on resume (bypassing
+re-derivation) before resuming the planner loop. Regression test:
+*"#1 durable approval pins the reviewed step against planner drift"*.
+
 ---
 
 ## 🔴 2. A sub-agent entering `input-required` deadlocks the run
@@ -53,6 +63,12 @@ bridged upward. (Same gap exists in `coordinator.ts` `call()`.)
 in the loop and either (a) propagate it as a new suspend / `Pending` reason the
 product answers on `resume()`, or (b) fail fast with a clear error until child
 input is supported. Today it just deadlocks.
+
+**✅ Resolved (option b).** Both `#exec` and `coordinator.call` now detect a child
+`input-required`, cancel the child task, and fail fast with a clear
+`CapabilityNotSupported` error instead of hanging. Full upward propagation (option a)
+needs durable cross-process child state — deferred, noted in DESIGN.md. Regression
+test: *"#2 a sub-agent requesting input fails fast instead of hanging"*.
 
 ---
 
@@ -75,6 +91,10 @@ The inline comment only warns about *concurrent* reuse; the **sequential leak**
 `configure({})`), or hand each step a per-use configured client instance (the spec
 models "one configured instance").
 
+**✅ Resolved.** `#exec` now calls `client.configure(step.config ?? {})` every step,
+resetting to declared defaults before layering the step's own config. Regression
+test: *"#3 per-step config does not leak across steps sharing an agent"*.
+
 ---
 
 ## 🟠 4. An auto-generated `runId` is unrecoverable (can't resume)
@@ -91,6 +111,10 @@ because they never learned the id.
 **Suggested fix:** surface `runId` — e.g. emit a first `run-started` event carrying
 it, or return it alongside the event stream.
 
+**✅ Resolved.** `run()` and `resume()` now emit a leading `run-started` event
+carrying the `runId`. Regression test: *"run() surfaces a generated runId via a
+run-started event"*.
+
 ---
 
 ## 🟡 5. "Parallelize ready steps for free" is not realized
@@ -101,6 +125,10 @@ it, or return it alongside the event stream.
 strictly **sequentially**. The variable-ref DAG encodes parallelism; the executor
 linearizes it. Fine for v1, but `DESIGN.md`'s "the executor can parallelize ready
 steps for free" is not yet true — worth a note so it isn't oversold.
+
+**✅ Resolved (doc).** DESIGN.md reworded to "the executor *can* parallelize ready
+steps (deferred — execution is sequential in dependency order today)." Parallel
+execution itself stays a Tier-B roadmap item.
 
 ---
 
@@ -118,6 +146,8 @@ The first `save` is immediately overwritten by the second, and
 `{ result: undefined }` is ignored by `snapshot()`. Harmless, but should be a
 single save.
 
+**✅ Resolved.** Collapsed to one `save` of `{ ...ctx.snapshot("failed"), error }`.
+
 ---
 
 ## 🟡 7. `rewrite` verdicts bypass re-ordering / re-validation
@@ -129,6 +159,10 @@ A governor that rewrites `step.id` or its `input` bindings runs **after** `#orde
 has been computed; the rewritten step isn't re-checked for dependency validity or
 re-ordered. Low risk (the governor is trusted product code), but worth either a
 guard or a documented constraint: *a rewrite MUST preserve `id` and dependencies.*
+
+**✅ Resolved.** `#govern` now rejects a rewrite that changes `step.id` (clear
+error), enforcing the identity constraint; new step-refs must already be satisfied
+(`resolveBindings` throws otherwise) — documented inline.
 
 ---
 
@@ -145,6 +179,12 @@ shapes are not validated here (the planner does check `registry.has(agent)` late
 **Suggested fix:** prefer the provider's strict structured-output mode, and/or
 validate the parsed object against `ACTION_SCHEMA` (e.g. via Ajv) before returning.
 
+**✅ Resolved (zero-dep).** `parseAction` now tries a direct `JSON.parse` first
+(the strict/structured happy path), falls back to brace extraction only on failure,
+and routes through `validateAction` which checks `kind`/`agent`/`use`/`text` shapes
+and normalizes the object (dropping stray keys). Kept `strict: false` for gateway
+breadth; validation is client-side. (No Ajv — the adapter stays dependency-free.)
+
 ---
 
 ## 🟡 9. `partsToText` silently drops non-text parts
@@ -154,6 +194,10 @@ validate the parsed object against `ACTION_SCHEMA` (e.g. via Ajv) before returni
 Only `text` and `data` parts survive; `file` parts are dropped. A sub-agent that
 produces a file artifact contributes nothing to the decider's observations.
 Acceptable for a text-first v1 — just note the limitation.
+
+**✅ Resolved.** `partsToText` now renders a `file` part as a `[file: name|mime|uri]`
+placeholder, so the decider knows an artifact exists (bytes remain out of band for a
+text decider — the documented limitation).
 
 ---
 
@@ -183,3 +227,12 @@ Acceptable for a text-first v1 — just note the limitation.
 3. Reset config between steps sharing an agent (#3).
 4. Surface `runId` (#4).
 5. Then the tidy-ups (#5–#9) as convenient.
+
+---
+
+## Status: all addressed ✅
+
+#1–#9 resolved (see inline notes); engine 23/23, `tsc` clean, demos pass. The
+"carried over" items remain open by design and live on the DESIGN.md roadmap:
+SDK publish, SDK self-conformance hardening, typed capability I/O (Scope B), and a
+real model-backed reference agent.

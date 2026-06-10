@@ -1,7 +1,7 @@
 // A Coordinator lets one agent drive others — the execution layer ("hands")
 // the engine stands on. Transport-agnostic: members can be in-process or
 // spawned subprocesses (any AgentClient).
-import { AgentError, JsonRpcCodes } from "@agentcompose/sdk";
+import { AgentError, JsonRpcCodes, ErrorCodes } from "@agentcompose/sdk";
 import type { AgentClient, AgentConfig, Part, Result } from "@agentcompose/sdk";
 
 /** A sink that receives a child's forwarded activity (e.g. an agent's ctx). */
@@ -70,8 +70,17 @@ export class Coordinator {
     try {
       for await (const ev of m.client.events(task.id)) {
         if (ev.type === "progress") opts.sink?.progress?.(ev.percent, `${name}: ${ev.message ?? ""}`);
-        else if (ev.type === "status") opts.sink?.progress?.(undefined, `${name} → ${ev.state}`);
-        else if (ev.type === "message" && opts.forwardMessages) opts.sink?.message?.(ev.delta);
+        else if (ev.type === "status") {
+          if (ev.state === "input-required") {
+            // Would hang the loop forever (stream closes only on terminal state). Fail fast.
+            await m.client.cancel(task.id).catch(() => {});
+            throw new AgentError(
+              ErrorCodes.CapabilityNotSupported,
+              `Member "${name}" requested input; nested input-required is not supported.`,
+            );
+          }
+          opts.sink?.progress?.(undefined, `${name} → ${ev.state}`);
+        } else if (ev.type === "message" && opts.forwardMessages) opts.sink?.message?.(ev.delta);
       }
     } finally {
       if (opts.signal && onAbort) opts.signal.removeEventListener("abort", onAbort);

@@ -12,6 +12,8 @@ export class RunContext {
   #outputs: Map<string, Part[]>;
   /** Steps approved by a human (seeded on resume); consulted by the governor path. */
   readonly approved: Set<string>;
+  /** A pending suspension restored on resume (e.g. the exact approved step to run). */
+  pending?: Pending;
 
   constructor(runId: string, goal: Part[], outputs?: Map<string, Part[]>, approved?: Set<string>) {
     this.runId = runId;
@@ -52,11 +54,13 @@ export class RunContext {
   }
 
   static from(snapshot: Snapshot, approved: Iterable<string> = []): RunContext {
-    return new RunContext(
+    const ctx = new RunContext(
       snapshot.runId,
       snapshot.goal,
       new Map(Object.entries(snapshot.outputs)),
       new Set(approved),
     );
+    ctx.pending = snapshot.pending;
+    return ctx;
   }
 }

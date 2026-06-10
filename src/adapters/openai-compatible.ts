@@ -68,19 +68,56 @@ function buildMessages(req: DecisionRequest, system?: string): { role: string; c
   ];
 }
 
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+/** Validate and normalize a parsed object into an Action (drops unknown keys). */
+function validateAction(obj: any): Action {
+  if (!obj || typeof obj !== "object") {
+    throw new AgentError(JsonRpcCodes.InternalError, "Decider model did not return a JSON object.");
+  }
+  if (obj.kind === "call") {
+    if (typeof obj.agent !== "string" || !obj.agent) {
+      throw new AgentError(JsonRpcCodes.InternalError, 'Decider "call" action is missing a string "agent".');
+    }
+    if (obj.instruction !== undefined && typeof obj.instruction !== "string") {
+      throw new AgentError(JsonRpcCodes.InternalError, 'Decider "call".instruction must be a string.');
+    }
+    if (obj.use !== undefined && !isStringArray(obj.use)) {
+      throw new AgentError(JsonRpcCodes.InternalError, 'Decider "call".use must be an array of strings.');
+    }
+    return { kind: "call", agent: obj.agent, instruction: obj.instruction, use: obj.use };
+  }
+  if (obj.kind === "finish") {
+    if (obj.use !== undefined && !isStringArray(obj.use)) {
+      throw new AgentError(JsonRpcCodes.InternalError, 'Decider "finish".use must be an array of strings.');
+    }
+    if (obj.text !== undefined && typeof obj.text !== "string") {
+      throw new AgentError(JsonRpcCodes.InternalError, 'Decider "finish".text must be a string.');
+    }
+    return { kind: "finish", use: obj.use, text: obj.text };
+  }
+  throw new AgentError(JsonRpcCodes.InternalError, `Decider model returned unknown kind "${obj.kind}".`);
+}
+
 function parseAction(content: string): Action {
-  const match = content.match(/\{[\s\S]*\}/);
-  if (!match) throw new AgentError(JsonRpcCodes.InternalError, "Decider model returned no JSON object.");
-  let obj: any;
+  const trimmed = content.trim();
+  let obj: unknown;
   try {
-    obj = JSON.parse(match[0]);
+    // Happy path: strict/structured output yields a pure JSON object.
+    obj = JSON.parse(trimmed);
   } catch {
-    throw new AgentError(JsonRpcCodes.InternalError, "Decider model returned invalid JSON.");
+    // Fallback for gateways that wrap JSON in prose: extract the outermost braces.
+    const match = trimmed.match(/\{[\s\S]*\}/);
+    if (!match) throw new AgentError(JsonRpcCodes.InternalError, "Decider model returned no JSON object.");
+    try {
+      obj = JSON.parse(match[0]);
+    } catch {
+      throw new AgentError(JsonRpcCodes.InternalError, "Decider model returned invalid JSON.");
+    }
   }
-  if (obj.kind !== "call" && obj.kind !== "finish") {
-    throw new AgentError(JsonRpcCodes.InternalError, `Decider model returned unknown kind "${obj.kind}".`);
-  }
-  return obj as Action;
+  return validateAction(obj);
 }
 
 /**

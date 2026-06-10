@@ -6,6 +6,8 @@ import {
   Engine,
   AgentRegistry,
   authoredPlan,
+  dynamicPlanner,
+  ScriptedDecider,
   approveWhen,
   InMemoryCheckpointStore,
 } from "../src/index.ts";
@@ -153,4 +155,85 @@ test("inline onApproval approves without suspending", async () => {
   assert.deepEqual(asked, ["b"]);
   assert.ok(events.some((e) => e.type === "result"));
   assert.ok(!events.some((e) => e.type === "suspended"));
+});
+
+test("run() surfaces a generated runId via a run-started event", async () => {
+  const engine = new Engine({ registry: registry(), planner: authoredPlan(chain()) });
+  const events = await collect(engine.run(goal("hi"))); // no runId provided
+  const started = events.find((e) => e.type === "run-started");
+  assert.ok(started && started.type === "run-started" && started.runId.length > 0);
+  // The surfaced id is resumable/snapshot-able.
+  const snap = await engine.snapshot(started.type === "run-started" ? started.runId : "");
+  assert.equal(snap?.status, "completed");
+});
+
+test("#1 durable approval pins the reviewed step against planner drift", async () => {
+  // The decider would choose a DIFFERENT agent for step-0 after the suspend; the engine
+  // must run the exact step a human approved, not a freshly re-derived one.
+  let drift = "upper";
+  const decider = new ScriptedDecider((req) =>
+    req.observations.length === 0
+      ? { kind: "call", agent: drift, use: ["goal"] }
+      : { kind: "finish", use: ["step-0"] },
+  );
+  const reg = registry();
+  const engine = new Engine({
+    registry: reg,
+    planner: dynamicPlanner({ decider, registry: reg }),
+    governor: approveWhen((s) => s.id === "step-0"),
+  });
+
+  const first = await collect(engine.run(goal("hello"), { runId: "pin1" }));
+  assert.ok(first.some((e) => e.type === "suspended"));
+
+  drift = "exclaim"; // the planner now wants exclaim for step-0…
+  const second = await collect(engine.resume("pin1", { approvals: { "step-0": true } }));
+  const result = second.find((e) => e.type === "result");
+  // …but the pinned, reviewed step (upper) runs: "HELLO", not "hello!".
+  assert.ok(result && result.type === "result");
+  assert.equal(textOf(result.parts).trim(), "HELLO");
+});
+
+test("#2 a sub-agent requesting input fails fast instead of hanging", { timeout: 5000 }, async () => {
+  const asker = defineAgent({
+    descriptor: { id: "t.ask", name: "Asker", version: "1.0.0", capabilities: [{ id: "a", description: "asks" }] },
+    async handle(_g, ctx) {
+      const more = await ctx.requestInput([{ kind: "text", text: "need more" }]);
+      return [{ kind: "text", text: textOf(more) }];
+    },
+  });
+  const reg = new AgentRegistry({ asker: inProcess(asker) });
+  const engine = new Engine({ registry: reg, planner: authoredPlan([{ id: "a", agent: "asker", input: [{ from: "goal" }] }]) });
+
+  const events = await collect(engine.run(goal("hi"), { runId: "in1" }));
+  assert.ok(events.some((e) => e.type === "step-failed" && (e as any).stepId === "a"));
+  const err = events.find((e) => e.type === "error");
+  assert.ok(err && err.type === "error" && /input/i.test(err.error.message));
+});
+
+test("#3 per-step config does not leak across steps sharing an agent", async () => {
+  const cfg = defineAgent({
+    descriptor: {
+      id: "t.cfg",
+      name: "Cfg",
+      version: "1.0.0",
+      capabilities: [{ id: "c", description: "echo depth" }],
+      configSchema: { type: "object", additionalProperties: false, properties: { depth: { type: "string", default: "shallow" } } },
+    },
+    async handle(_g, ctx) {
+      return [{ kind: "text", text: String(ctx.config.depth) }];
+    },
+  });
+  const reg = new AgentRegistry({ cfg: inProcess(cfg) });
+  const engine = new Engine({
+    registry: reg,
+    planner: authoredPlan([
+      { id: "a", agent: "cfg", input: [{ from: "goal" }], config: { depth: "deep" } },
+      { id: "b", agent: "cfg", input: [{ from: "goal" }] }, // no config → must reset to default
+    ]),
+  });
+  const events = await collect(engine.run(goal("x"), { runId: "cfg1" }));
+  const done = events.filter((e) => e.type === "step-completed") as Extract<EngineEvent, { type: "step-completed" }>[];
+  assert.equal(textOf(done.find((e) => e.stepId === "a")!.parts).trim(), "deep");
+  assert.equal(textOf(done.find((e) => e.stepId === "b")!.parts).trim(), "shallow");
 });

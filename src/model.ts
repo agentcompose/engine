@@ -74,10 +74,20 @@ export class ScriptedDecider implements Decider {
   }
 }
 
-/** Render Part[] to plain text for prompts/observations (text parts only, joined). */
+/** Render Part[] to plain text for prompts/observations. Text and data parts are
+ *  rendered inline; a file part becomes a `[file: ...]` placeholder so the decider at
+ *  least knows an artifact was produced (its bytes are out of band for a text decider). */
 export function partsToText(parts: Part[]): string {
   return parts
-    .map((p) => (p.kind === "text" ? p.text : p.kind === "data" ? JSON.stringify(p.data) : ""))
+    .map((p) =>
+      p.kind === "text"
+        ? p.text
+        : p.kind === "data"
+          ? JSON.stringify(p.data)
+          : p.kind === "file"
+            ? `[file: ${p.name ?? p.mimeType ?? p.uri}]`
+            : "",
+    )
     .filter(Boolean)
     .join("\n");
 }
