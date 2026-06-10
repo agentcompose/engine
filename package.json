@@ -1,15 +1,28 @@
 {
   "name": "@agentcompose/engine",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Headless orchestration engine for AgentCompose — turn a goal into a plan and execute it across configurable agents.",
   "type": "module",
   "license": "Apache-2.0",
-  "engines": { "node": ">=22" },
+  "homepage": "https://agentcompose.dev",
+  "repository": { "type": "git", "url": "git+https://github.com/agentcompose/engine.git" },
+  "engines": { "node": ">=18.19" },
+  "files": ["dist", "README.md", "DESIGN.md", "LICENSE"],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./adapters/openai": "./src/adapters/openai-compatible.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./adapters/openai": {
+      "types": "./dist/adapters/openai-compatible.d.ts",
+      "default": "./dist/adapters/openai-compatible.js"
+    }
   },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run build",
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "demo:team": "node examples/run-team.ts",
@@ -18,10 +31,10 @@
     "demo:nested": "node examples/engine-as-agent.ts"
   },
   "dependencies": {
-    "@agentcompose/sdk": "file:../sdk-typescript"
+    "@agentcompose/sdk": "^0.1.0"
   },
   "devDependencies": {
-    "typescript": "^5.6.0",
+    "typescript": "^5.9.0",
     "@types/node": "^22.0.0"
   }
 }
