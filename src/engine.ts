@@ -314,10 +314,14 @@ export class Engine {
   ): AsyncGenerator<EngineEvent, Part[]> {
     const client = this.#registry.client(agentName);
 
-    // Reset to declared defaults each attempt, then layer this step's config. Without the
-    // reset, a prior step's config would leak onto a later step that shares the agent
-    // (the registry holds one shared client). Sequential execution makes this safe.
-    await client.configure(step.config ?? {});
+    // Reset to the agent's base (instance) config each attempt, then layer this step's
+    // per-use config over it. The reset gives step isolation when a shared client is
+    // reused across steps; layering over the registry's base config (not bare schema
+    // defaults) keeps instance config — e.g. an injected provider — alive on steps that
+    // don't repeat it. A step's config is a per-use overlay on the configured instance;
+    // concurrent reuse with differing configs would need per-use client instances.
+    const base = this.#registry.configFor(agentName);
+    await client.configure({ ...(base ?? {}), ...(step.config ?? {}) });
 
     const input = resolveBindings(step.input, ctx);
     const task = await client.submit(input);

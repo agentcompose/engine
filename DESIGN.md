@@ -171,6 +171,16 @@ are built. What "complete" still needs, in order of leverage:
 | **B — robustness** | **parallel** ready steps (the DAG already encodes independence); real persistence + per-`runId` locking; exactly-once via idempotency keys | deferred |
 | **C — composable & complete** | **`asAgent()` (recursive composition)** — ✅ built; cross-run **memory** (consumed by the planner); typed capability I/O (spec Scope B); durable event log + tracing | partly built |
 
+**Known limitations (current).**
+- **Approval resume does not re-govern.** A step suspended for approval is pinned and,
+  on resume, executed as reviewed — the governor is not consulted again. With a static
+  policy this is correct; a *stateful* governor that would now block or rewrite (clamp
+  limits, redact) is skipped after approval. Re-governing on resume is a planned option.
+- **Per-step config on a shared client is sequential.** A step's per-use config overlays
+  the instance's base config on the one shared client; running independent steps that need
+  *different* configs concurrently would require per-use client instances (tied to the
+  deferred parallel-execution work).
+
 Guiding rule throughout: **decide build-vs-wrap per seam** — own the loop; wrap only
 mature, purpose-built solvers for the narrow sub-problems around it.
 

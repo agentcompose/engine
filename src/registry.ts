@@ -2,12 +2,16 @@
 // client and (lazily) the descriptor. The engine never constructs clients; the
 // product builds the registry and injects it.
 import { AgentError, JsonRpcCodes } from "@agentcompose/sdk";
-import type { AgentClient, AgentDescriptor } from "@agentcompose/sdk";
+import type { AgentClient, AgentDescriptor, AgentConfig } from "@agentcompose/sdk";
 
 export interface RegistryEntry {
   client: AgentClient;
   /** Optional cached descriptor; fetched on demand if absent. */
   descriptor?: AgentDescriptor;
+  /** Instance-level (base) config for this agent. The engine layers a step's
+   *  per-use `Step.config` over this each step, so base config (e.g. an injected
+   *  provider) survives steps that don't repeat it. */
+  config?: AgentConfig;
 }
 
 export class AgentRegistry {
@@ -43,6 +47,11 @@ export class AgentRegistry {
       );
     }
     return entry.client;
+  }
+
+  /** The instance-level (base) config for an agent, if any was registered. */
+  configFor(name: string): AgentConfig | undefined {
+    return this.#entries.get(name)?.config;
   }
 
   /** Fetch (and cache) a descriptor — used by planners to choose agents. */
