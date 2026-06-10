@@ -96,6 +96,22 @@ export class Engine {
     }
     if (snap.status === "canceled") return void (yield { type: "canceled" });
 
+    // Durable denial: an explicit `false` for the suspended step rejects it and fails
+    // the run (vs. "absent", which leaves it pending and re-suspends). The inline
+    // onApproval path can already deny; this gives the checkpoint/resume path — the
+    // real product path — the same "reject", not just "approve or keep waiting".
+    if (snap.pending?.kind === "approval" && opts.approvals?.[snap.pending.stepId] === false) {
+      const error: RpcError = {
+        code: JsonRpcCodes.InvalidParams,
+        message: `Step "${snap.pending.stepId}" denied by approver.`,
+      };
+      const ctx = RunContext.from(snap);
+      await this.#checkpoints.save(runId, { ...ctx.snapshot("failed"), error });
+      yield { type: "step-failed", stepId: snap.pending.stepId, error };
+      yield { type: "error", error };
+      return;
+    }
+
     const approved = Object.entries(opts.approvals ?? {})
       .filter(([, ok]) => ok)
       .map(([id]) => id);

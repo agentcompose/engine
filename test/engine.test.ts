@@ -237,3 +237,20 @@ test("#3 per-step config does not leak across steps sharing an agent", async () 
   assert.equal(textOf(done.find((e) => e.stepId === "a")!.parts).trim(), "deep");
   assert.equal(textOf(done.find((e) => e.stepId === "b")!.parts).trim(), "shallow");
 });
+
+test("durable denial: an explicit false approval fails the run (not re-suspend)", async () => {
+  const engine = new Engine({
+    registry: registry(),
+    planner: authoredPlan(chain()),
+    governor: approveWhen((s) => s.id === "a"),
+  });
+  const first = await collect(engine.run(goal("hello"), { runId: "deny1" }));
+  assert.ok(first.some((e) => e.type === "suspended"));
+
+  const second = await collect(engine.resume("deny1", { approvals: { a: false } }));
+  assert.ok(second.some((e) => e.type === "step-failed" && (e as any).stepId === "a"));
+  assert.ok(second.some((e) => e.type === "error"));
+  assert.ok(!second.some((e) => e.type === "result"));
+  const snap = await engine.snapshot("deny1");
+  assert.equal(snap?.status, "failed");
+});

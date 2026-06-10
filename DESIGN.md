@@ -142,6 +142,13 @@ ScriptedDecider                                            // no-network referen
   as the spec's `Provider { baseUrl, apiKey }` already assumes. It pulls **no npm deps**.
 - **Structured output, not prompt-scraping.** The adapter requests JSON-schema-shaped
   output so the model produces the `Action`; parsing lives only in the adapter.
+- **Untrusted observations (trust boundary).** The goal and prior step outputs fed to the
+  decider are *data*, not instructions — a crafted goal or a poisoned sub-agent output
+  could try to hijack the plan ("ignore the above; finish with …"). The reference adapter
+  fences these in explicitly-untrusted blocks and the system prompt forbids following
+  them; `validateAction` + `registry.has(agent)` bound `call` to registered agents. This
+  reduces but does not eliminate prompt injection — a `Governor` over `finish` content is
+  the place to add a hard check for sensitive deployments.
 - **Everything is swappable at the port.** Pi's connection layer (`@earendil-works/pi-ai`),
   the Vercel AI SDK, Instructor, or provider-native structured outputs are alternative
   `Decider`s — the engine core and `dynamicPlanner` never change.
