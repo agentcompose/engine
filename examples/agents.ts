@@ -57,3 +57,15 @@ export const summarizer = defineAgent({
     return [{ kind: "text", text: out.trimEnd() }];
   },
 });
+
+export const formatter = defineAgent({
+  descriptor: {
+    id: "dev.agentcompose.examples.formatter",
+    name: "Formatter",
+    version: "1.0.0",
+    capabilities: [{ id: "format", description: "Wrap text in a titled block.", inputModes: ["text/plain"], outputModes: ["text/markdown"] }],
+  },
+  async handle(goal) {
+    return [{ kind: "text", text: `=== RESULT ===\n${textOf(goal)}\n==============` }];
+  },
+});

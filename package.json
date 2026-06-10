@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "demo:team": "node examples/run-team.ts",
     "demo:engine": "node examples/run-engine.ts",
-    "demo:dynamic": "node examples/run-dynamic.ts"
+    "demo:dynamic": "node examples/run-dynamic.ts",
+    "demo:nested": "node examples/engine-as-agent.ts"
   },
   "dependencies": {
     "@agentcompose/sdk": "file:../sdk-typescript"

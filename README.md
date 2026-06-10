@@ -22,7 +22,7 @@ no presentation. It exposes interfaces a product injects.
 | Part | Role | Status |
 |------|------|--------|
 | **`Coordinator`** | the **hands** — execute calls across agents, wire output→input, forward progress, propagate cancel/errors | ✅ built |
-| **`Engine`** | the **brain + chassis** — accept a *goal*, run a *plan* (authored **or** dynamically decided) through governance, durably and resumably | ✅ chassis + dynamic planner |
+| **`Engine`** | the **brain + chassis** — accept a *goal*, run a *plan* (authored **or** dynamically decided) through governance, durably and resumably; also an **agent itself** (`asAgent`) | ✅ chassis + dynamic planner + recursion |
 
 The difference is **goal-based vs imperative**: you hand the Coordinator explicit
 calls; you hand the Engine a *goal* and it decides the calls. A master agent is
@@ -55,6 +55,7 @@ npm install            # links @agentcompose/sdk via file: for now
 
 npm run demo:engine  "AI agent interoperability"   # authored workflow: goal → fixed DAG
 npm run demo:dynamic "AI agent interoperability"   # dynamic: goal → decided step-by-step (offline)
+npm run demo:nested  "AI agent interoperability"   # recursion: an engine running as a step inside an engine
 npm run demo:team    "AI agent interoperability"   # Coordinator: a master agent composing two members
 ```
 
@@ -89,10 +90,15 @@ to any OpenAI-compatible `baseUrl`, so a gateway handles provider portability. P
 `pi-ai`, the Vercel AI SDK, Instructor, or provider-native structured outputs are
 drop-in alternatives at the same port.
 
+**Built — recursive composition (`asAgent`):** an engine is exposed as an agent, so an
+engine can be a *step inside another engine*; governor approval bridges to the agent's
+`input-required` state. Closes the "a master agent IS an agent" recursion.
+
 **Deferred (clearly):** retry/backoff/fallback (behind `step-failed`); parallel
 execution of independent steps (the DAG already encodes the graph); real persistence
-+ per-`runId` locking; exactly-once via idempotency keys; `asAgent()` recursion;
-cross-run **memory** (its first consumer is the planner); typed capability I/O. See `DESIGN.md`.
++ per-`runId` locking; exactly-once via idempotency keys; durable resume *across* the
+`asAgent` boundary; cross-run **memory** (its first consumer is the planner); typed
+capability I/O. See `DESIGN.md`.
 
 ## License
 

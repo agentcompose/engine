@@ -162,7 +162,18 @@ are built. What "complete" still needs, in order of leverage:
 | **chassis** | durable · governed · checkpoint/resume · fail-fast · cancel | ✅ built |
 | **A — goal-based brain** | dynamic planner over the `decide` port; observe→re-plan loop | ✅ built (one reference adapter; observe→re-plan via single-step rounds) |
 | **B — robustness** | retry/backoff/fallback (behind `step-failed`); **parallel** ready steps (the DAG already encodes independence); real persistence + per-`runId` locking; exactly-once via idempotency keys | deferred |
-| **C — composable & complete** | `asAgent()` (recursive composition); cross-run **memory** (consumed by the planner); typed capability I/O (spec Scope B); durable event log + tracing | deferred |
+| **C — composable & complete** | **`asAgent()` (recursive composition)** — ✅ built; cross-run **memory** (consumed by the planner); typed capability I/O (spec Scope B); durable event log + tracing | partly built |
 
 Guiding rule throughout: **decide build-vs-wrap per seam** — own the loop; wrap only
 mature, purpose-built solvers for the narrow sub-problems around it.
+
+## Recursive composition: `asAgent()`
+
+An engine **is** an agent, so it can be a step inside another engine. `asAgent({ descriptor,
+engine })` returns an `AgentDefinition`: its handler drives `engine.run()` and translates the
+engine's event stream onto the agent's emit surface (progress/message/artifact), maps the
+final `result` out and `error` up, and **bridges governor approval to the agent's
+`input-required` state** via `ctx.requestInput`. Register the wrapped engine like any other
+agent and an outer engine calls it as a worker — the whole 4-layer thesis becomes
+self-similar. (Deferred: durable resume *across* the agent boundary — one handler invocation
+drives a run to completion today; mapping `ctx.config` onto engine/planner parameters.)

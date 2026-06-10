@@ -8,6 +8,11 @@
 export { Engine } from "./engine.ts";
 export type { EngineOptions, RunOptions, ResumeOptions, OnApproval } from "./engine.ts";
 
+// Recursive composition: expose an Engine as an agent (an engine can be a step
+// inside another engine).
+export { asAgent } from "./as-agent.ts";
+export type { AsAgentOptions } from "./as-agent.ts";
+
 // Plan / step model
 export type { Plan, Step, Binding, EngineEvent, Snapshot, RunStatus, Pending } from "./types.ts";
 
