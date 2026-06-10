@@ -19,7 +19,6 @@ import type { Governor } from "./governor.ts";
 import type { Planner } from "./planner.ts";
 import { InMemoryCheckpointStore } from "./checkpoint.ts";
 import type { CheckpointStore } from "./checkpoint.ts";
-import type { MemoryProvider } from "./memory.ts";
 
 /** Resolve a human approval inline (non-durable). For durable HITL, omit this and
  *  let the run suspend, then approve via resume(runId, { approvals }). */
@@ -29,7 +28,6 @@ export interface EngineOptions {
   registry: AgentRegistry;
   planner: Planner;
   governor?: Governor;
-  memory?: MemoryProvider;
   checkpoints?: CheckpointStore;
 }
 
@@ -61,20 +59,13 @@ export class Engine {
   #registry: AgentRegistry;
   #planner: Planner;
   #governor: Governor;
-  #memory?: MemoryProvider;
   #checkpoints: CheckpointStore;
 
   constructor(opts: EngineOptions) {
     this.#registry = opts.registry;
     this.#planner = opts.planner;
     this.#governor = opts.governor ?? allowAll;
-    this.#memory = opts.memory;
     this.#checkpoints = opts.checkpoints ?? new InMemoryCheckpointStore();
-  }
-
-  /** Cross-run memory, if injected (consumed by planners/agents, not the executor yet). */
-  get memory(): MemoryProvider | undefined {
-    return this.#memory;
   }
 
   /** Load the latest checkpoint for a run (e.g. to read its terminal result). */

@@ -39,15 +39,6 @@ export class Coordinator {
     for (const m of members) this.#members.set(m.name, m);
   }
 
-  add(member: Member): this {
-    this.#members.set(member.name, member);
-    return this;
-  }
-
-  has(name: string): boolean {
-    return this.#members.has(name);
-  }
-
   names(): string[] {
     return [...this.#members.keys()];
   }

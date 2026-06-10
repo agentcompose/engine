@@ -20,8 +20,6 @@ export { allowAll, approveWhen } from "./governor.ts";
 export type { Governor, GovernorDecision } from "./governor.ts";
 export { InMemoryCheckpointStore } from "./checkpoint.ts";
 export type { CheckpointStore } from "./checkpoint.ts";
-export { InMemoryMemoryProvider } from "./memory.ts";
-export type { MemoryProvider } from "./memory.ts";
 export { RunContext } from "./context.ts";
 
 // Composition primitive (used inside agent handlers; the Engine drives clients directly)

@@ -79,10 +79,11 @@ npm run typecheck
 loop, variable-reference DAG execution, dependency ordering, runtime governance
 (allow/block/rewrite/approve), per-step checkpointing, durable suspend/resume for
 human approval, fail-fast, and cancellation. Reference in-memory `CheckpointStore`
-and `MemoryProvider`; an `authoredPlan` planner.
+and an `authoredPlan` planner.
 
-**Deferred (clearly):** a dynamic/LLM planner (the seam exists), parallel execution
-of independent steps (the DAG already encodes the graph), retry/backoff, exactly-once
+**Deferred (clearly):** a dynamic/LLM planner (the seam exists) and cross-run
+**memory** (lands with that planner, its first consumer); parallel execution of
+independent steps (the DAG already encodes the graph); retry/backoff; exactly-once
 on resume (at-least-once today — the spec's idempotency keys are the path), and
 cross-process concurrency control in the checkpoint store. See `DESIGN.md`.
 

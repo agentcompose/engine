@@ -56,8 +56,8 @@ interface Planner { next(goal: Part[], ctx: RunContext): Promise<Plan> }
 
 // State kept in four separate layers — never one growing transcript.
 interface RunContext { /* working state: step outputs by id, the goal */ }
-interface CheckpointStore { save(runId, snap): Promise<void>; load(runId): Promise<Snapshot | null> }
-interface MemoryProvider { recall(scope): Promise<unknown>; remember(scope, v): Promise<void> }
+interface CheckpointStore { save(runId, snap): Promise<void>; load(runId): Promise<Snapshot | null> }  // durable
+// cross-run memory (MemoryProvider) lands with the dynamic planner — its first consumer
 type EngineEvent = …  // the event log: plan · step-started/completed/failed · message · artifact · error
 
 // Governance — the model proposes, the runtime decides.
@@ -85,9 +85,11 @@ Engine.resume(runId, opts): AsyncIterable<EngineEvent>;
 | **Failure: fail-fast (v1)** | a failed step fails the run | Simple and predictable. `step-failed` is modeled explicitly so retries/fallbacks slot in later without reshaping the loop. |
 | **Workers return distilled output** | members summarize, don't dump | Sub-agents exist to isolate context; returning condensed results is the point, not an afterthought. |
 
-The engine **never** implements `CheckpointStore`, `MemoryProvider`, `Governor`, or
-the agent clients — the product injects them. The engine owns the loop; the product
-owns persistence, memory, policy, and UI. That split is the whole architecture.
+The engine **never** implements `CheckpointStore`, `Governor`, or the agent clients
+— the product injects them. The engine owns the loop; the product owns persistence,
+policy, and UI. (Cross-run memory is the fourth state layer; it enters the boundary
+when the dynamic planner — its first consumer — lands, not before.) That split is
+the whole architecture.
 
 ## What we build first
 

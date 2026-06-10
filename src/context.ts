@@ -1,7 +1,7 @@
 // Working state for a single run: the goal, completed step outputs, and the set
 // of steps a human has approved. Serializes to/from a Snapshot so a run can be
 // checkpointed and resumed. This is the "working state" layer — distinct from
-// durable state (CheckpointStore), cross-run memory (MemoryProvider), and the
+// durable state (CheckpointStore), cross-run memory (roadmap), and the
 // event log (the EngineEvent stream).
 import type { Part } from "@agentcompose/sdk";
 import type { RunStatus, Snapshot, Pending } from "./types.ts";
