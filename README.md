@@ -48,10 +48,19 @@ await team.close();
 `Coordinator` is transport-agnostic — members may be `inProcess` or `spawnStdio`
 (subprocess) clients; the code is identical.
 
+## Install
+
+```bash
+npm install @agentcompose/engine
+```
+
+Ships compiled JS + type declarations; runs on Node ≥ 18.19. Depends on
+[`@agentcompose/sdk`](https://www.npmjs.com/package/@agentcompose/sdk).
+
 ## Try the demos
 
 ```bash
-npm install            # links @agentcompose/sdk via file: for now
+npm install            # install dependencies
 
 npm run demo:engine  "AI agent interoperability"   # authored workflow: goal → fixed DAG
 npm run demo:dynamic "AI agent interoperability"   # dynamic: goal → decided step-by-step (offline)
@@ -69,11 +78,12 @@ See [DESIGN.md](./DESIGN.md) for the architecture and the reasons behind it.
 npm install
 npm test          # coordinator: chaining, progress forwarding, failure, parallel
 npm run typecheck
+npm run build     # emit dist/ (compiled JS + d.ts) as published to npm
 ```
 
-> **Local linkage.** This repo depends on the SDK via `file:../sdk-typescript`
-> while neither package is published. A proper release chain (publish the SDK,
-> then depend on the published version) comes later.
+> **Authoring vs distribution.** This repo is authored in strip-mode TypeScript and
+> run directly by Node in development; `npm run build` emits the `dist/` that is
+> published to npm. Consumers get standard JavaScript + declarations.
 
 ## What's built, and what's next
 
