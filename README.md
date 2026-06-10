@@ -90,9 +90,13 @@ to any OpenAI-compatible `baseUrl`, so a gateway handles provider portability. P
 `pi-ai`, the Vercel AI SDK, Instructor, or provider-native structured outputs are
 drop-in alternatives at the same port.
 
-**Built — recursive composition (`asAgent`):** an engine is exposed as an agent, so an
-engine can be a *step inside another engine*; governor approval bridges to the agent's
-`input-required` state. Closes the "a master agent IS an agent" recursion.
+**Built — recursive composition (`asAgent`) — the engine's "publish" button:** the SDK
+lets you publish an agent you *wrote* (`defineAgent`); the engine lets you publish an agent
+you *composed* (`asAgent({ descriptor, engine })`). Both emit the same shape, so a composed
+team can be consumed — or shipped as a dependency — exactly like a leaf agent. (A
+`descriptor` is a nameplate — id/version/capabilities — not "an AI"; an engine carries one
+the same way a leaf does.) Governor approval bridges to the agent's `input-required` state.
+Unused at a single level; it earns its place when a composition is shipped as a dependency.
 
 **Deferred (clearly):** retry/backoff/fallback (behind `step-failed`); parallel
 execution of independent steps (the DAG already encodes the graph); real persistence

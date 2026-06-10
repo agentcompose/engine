@@ -167,13 +167,37 @@ are built. What "complete" still needs, in order of leverage:
 Guiding rule throughout: **decide build-vs-wrap per seam** — own the loop; wrap only
 mature, purpose-built solvers for the narrow sub-problems around it.
 
-## Recursive composition: `asAgent()`
+## Recursive composition: `asAgent()` — the engine's "publish" button
 
-An engine **is** an agent, so it can be a step inside another engine. `asAgent({ descriptor,
-engine })` returns an `AgentDefinition`: its handler drives `engine.run()` and translates the
-engine's event stream onto the agent's emit surface (progress/message/artifact), maps the
-final `result` out and `error` up, and **bridges governor approval to the agent's
-`input-required` state** via `ctx.requestInput`. Register the wrapped engine like any other
-agent and an outer engine calls it as a worker — the whole 4-layer thesis becomes
-self-similar. (Deferred: durable resume *across* the agent boundary — one handler invocation
-drives a run to completion today; mapping `ctx.config` onto engine/planner parameters.)
+There are two ways to produce a publishable agent, and they emit the **same shape**:
+
+| Authoring method | What you write | Result |
+|---|---|---|
+| **SDK** (`defineAgent`) | a `handle` wrapping a real tool (search, an LLM, plain code) | a publishable **leaf** agent |
+| **Engine + `asAgent()`** | a plan wiring existing agents together | a publishable **composite** agent |
+
+The SDK lets you publish an agent you *wrote*; the engine lets you publish an agent you
+*composed*. A consumer can't tell which path produced a given agent — both carry a
+`descriptor` and speak the task lifecycle.
+
+> A `descriptor` is **a nameplate, not "an AI"**: `{ id, version, capabilities, configSchema }`.
+> It declares a component's public face — its name and what it can do — and says nothing
+> about the internals (an LLM, plain code, or a whole engine). So an engine carrying a
+> descriptor is not a contradiction; it's the composite declaring its capability, exactly
+> as a leaf does. (Cf. a Docker image's name + exposed ports: one nameplate whether the
+> guts are one process or a supervised tree.)
+
+`asAgent({ descriptor, engine })` returns an `AgentDefinition`: its handler drives
+`engine.run()` and translates the engine's event stream onto the agent's emit surface
+(progress/message/artifact), maps the final `result` out and `error` up, and **bridges
+governor approval to the agent's `input-required` state** via `ctx.requestInput`. Register
+the wrapped engine like any other agent and an outer engine calls it as a worker — so a
+composite can be a member of the next composition, recursively.
+
+**When you actually need it.** At a *single* level — your product runs one engine that
+consumes leaf agents — `asAgent()` is unused, and that's fine. It earns its place the day a
+composed team is **shipped as a dependency** for another engine (or product) to consume,
+i.e. the marketplace / "reusable component" story. Until then it's an optional second hat
+the engine can wear. (Deferred: durable resume *across* the agent boundary — one handler
+invocation drives a run to completion today; mapping `ctx.config` onto engine/planner
+parameters.)

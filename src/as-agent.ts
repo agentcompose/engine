@@ -1,9 +1,14 @@
-// asAgent — expose an Engine as an AgentComponent.
+// asAgent — the engine's "publish" button: turn a composition into a publishable agent.
 //
-// This closes the recursion the whole model rests on: an engine *is* an agent, so an
-// engine can be a step inside another engine. The wrapper is thin — it drives
-// engine.run() and translates the engine's event stream onto the agent handler's
-// emit surface, mapping the final result out and errors up.
+// Two ways produce the same shape: the SDK (defineAgent) publishes an agent you *wrote*;
+// asAgent publishes an agent you *composed*. Both carry a descriptor (a nameplate — id,
+// version, capabilities — NOT "an AI") and speak the task lifecycle, so a consumer can't
+// tell a leaf from a team. That's also what lets a composition be a step inside another
+// engine (recursion). At a single level this is unused; it earns its place when a composed
+// team is shipped as a dependency for another engine/product to consume.
+//
+// The wrapper is thin — it drives engine.run() and translates the engine's event stream
+// onto the agent handler's emit surface, mapping the final result out and errors up.
 //
 // Approval bridges to the agent's own input-required state: when the engine's governor
 // asks for approval, the wrapped agent pauses via ctx.requestInput and resumes when the
