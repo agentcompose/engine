@@ -29,6 +29,8 @@ export { allowAll, approveWhen } from "./governor.ts";
 export type { Governor, GovernorDecision } from "./governor.ts";
 export { InMemoryCheckpointStore } from "./checkpoint.ts";
 export type { CheckpointStore } from "./checkpoint.ts";
+export { defaultRetryable, resolveRetry, computeBackoff, DEFAULT_RETRY } from "./retry.ts";
+export type { RetryConfig, Retryable, ResolvedRetry } from "./retry.ts";
 export { RunContext } from "./context.ts";
 
 // Composition primitive (used inside agent handlers; the Engine drives clients directly)

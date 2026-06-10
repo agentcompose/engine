@@ -82,7 +82,7 @@ Engine.resume(runId, opts): AsyncIterable<EngineEvent>;
 | **State in 4 layers** | working / durable / memory / event-log, separated | A single transcript bloats and rots; separation keeps runs inspectable, recoverable, and cheap on context. |
 | **Durable + resumable** | checkpoint per step; `run` + `resume` | This is what separates a product from a demo: fail on step 7, resume from step 7 — and survive long waits for human input. |
 | **Governance in the runtime** | `Governor`: allow/block/rewrite/approve | Control that lives only in a prompt fails under pressure. The runtime — not the model — decides what executes. Also *is* the HITL seam. |
-| **Failure: fail-fast (v1)** | a failed step fails the run | Simple and predictable. `step-failed` is modeled explicitly so retries/fallbacks slot in later without reshaping the loop. |
+| **Failure: retry → fallback → fail** | transient-only retry (backoff+jitter), then fallback agents, then fail the run | Built behind `step-failed`. The classifier retries only transient failures (rate-limit / 5xx / network / timeout); deterministic errors fail fast. Per-step knobs are JSON-only so suspend/resume stays durable. Retries are in-process within a step — on crash, resume re-runs the step from attempt 1 (steps are idempotent). Exactly-once across crashes still needs idempotency keys (deferred). |
 | **Workers return distilled output** | members summarize, don't dump | Sub-agents exist to isolate context; returning condensed results is the point, not an afterthought. |
 
 The engine **never** implements `CheckpointStore`, `Governor`, or the agent clients
@@ -166,9 +166,9 @@ are built. What "complete" still needs, in order of leverage:
 
 | Tier | What | State |
 |---|---|---|
-| **chassis** | durable · governed · checkpoint/resume · fail-fast · cancel | ✅ built |
+| **chassis** | durable · governed · checkpoint/resume · retry/fallback · cancel | ✅ built |
 | **A — goal-based brain** | dynamic planner over the `decide` port; observe→re-plan loop | ✅ built (one reference adapter; observe→re-plan via single-step rounds) |
-| **B — robustness** | retry/backoff/fallback (behind `step-failed`); **parallel** ready steps (the DAG already encodes independence); real persistence + per-`runId` locking; exactly-once via idempotency keys | deferred |
+| **B — robustness** | **parallel** ready steps (the DAG already encodes independence); real persistence + per-`runId` locking; exactly-once via idempotency keys | deferred |
 | **C — composable & complete** | **`asAgent()` (recursive composition)** — ✅ built; cross-run **memory** (consumed by the planner); typed capability I/O (spec Scope B); durable event log + tracing | partly built |
 
 Guiding rule throughout: **decide build-vs-wrap per seam** — own the loop; wrap only

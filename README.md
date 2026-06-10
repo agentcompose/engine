@@ -80,8 +80,16 @@ npm run typecheck
 **Built — the durable deterministic slice:** `Engine.run`/`resume`, the planner
 loop, variable-reference DAG execution, dependency ordering, runtime governance
 (allow/block/rewrite/approve), per-step checkpointing, durable suspend/resume for
-human approval, fail-fast, and cancellation. Reference in-memory `CheckpointStore`
+human approval, and cancellation. Reference in-memory `CheckpointStore`
 and an `authoredPlan` planner.
+
+**Built — step resilience:** transient-only retry with exponential backoff + jitter,
+per-step timeouts, and ordered **fallback agents** (`step.fallback`), all behind
+`step-failed` with `step-retry`/`step-fallback` events for observability. The
+classifier retries only transient failures (rate-limit / 5xx / network / timeout);
+deterministic errors fail fast. Per-step knobs are JSON-only, so durable
+suspend/resume is unaffected; retries are in-process (resume re-runs a step from
+attempt 1, since steps are idempotent).
 
 **Built — the dynamic planner (Tier A):** a goal-driven `dynamicPlanner` over a tiny
 `decide` port (engine core stays model-dependency-free), a no-network `ScriptedDecider`,
@@ -98,7 +106,7 @@ team can be consumed — or shipped as a dependency — exactly like a leaf agen
 the same way a leaf does.) Governor approval bridges to the agent's `input-required` state.
 Unused at a single level; it earns its place when a composition is shipped as a dependency.
 
-**Deferred (clearly):** retry/backoff/fallback (behind `step-failed`); parallel
+**Deferred (clearly):** parallel
 execution of independent steps (the DAG already encodes the graph); real persistence
 + per-`runId` locking; exactly-once via idempotency keys; durable resume *across* the
 `asAgent` boundary; cross-run **memory** (its first consumer is the planner); typed

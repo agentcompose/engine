@@ -19,6 +19,8 @@ import type { Governor } from "./governor.ts";
 import type { Planner } from "./planner.ts";
 import { InMemoryCheckpointStore } from "./checkpoint.ts";
 import type { CheckpointStore } from "./checkpoint.ts";
+import { resolveRetry, computeBackoff, defaultRetryable } from "./retry.ts";
+import type { RetryConfig, Retryable } from "./retry.ts";
 
 /** Resolve a human approval inline (non-durable). For durable HITL, omit this and
  *  let the run suspend, then approve via resume(runId, { approvals }). */
@@ -29,6 +31,10 @@ export interface EngineOptions {
   planner: Planner;
   governor?: Governor;
   checkpoints?: CheckpointStore;
+  /** Engine-wide default retry knobs; per-step `Step.retry` overrides field-wise. */
+  retry?: RetryConfig;
+  /** Engine-wide classifier deciding which failures retry. Default: transient-only. */
+  retryable?: Retryable;
 }
 
 export interface RunOptions {
@@ -55,17 +61,41 @@ class StepFailed extends Error {
 }
 class RunCanceled extends Error {}
 
+/** Sleep that rejects with RunCanceled if the run's signal aborts during the wait. */
+function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(new RunCanceled());
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      cleanup();
+      reject(new RunCanceled());
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export class Engine {
   #registry: AgentRegistry;
   #planner: Planner;
   #governor: Governor;
   #checkpoints: CheckpointStore;
+  #retry: RetryConfig | undefined;
+  #retryable: Retryable;
 
   constructor(opts: EngineOptions) {
     this.#registry = opts.registry;
     this.#planner = opts.planner;
     this.#governor = opts.governor ?? allowAll;
     this.#checkpoints = opts.checkpoints ?? new InMemoryCheckpointStore();
+    this.#retry = opts.retry;
+    this.#retryable = opts.retryable ?? defaultRetryable;
   }
 
   /** Load the latest checkpoint for a run (e.g. to read its terminal result). */
@@ -232,19 +262,75 @@ export class Engine {
     return "suspend";
   }
 
-  /** Execute one step against its agent, streaming its activity as engine events. */
+  /** Execute one step with bounded retry + fallback, streaming its activity as events.
+   *  Tries each candidate agent (primary, then fallbacks) up to its attempt budget;
+   *  only transient failures retry, others move straight to the next candidate. */
   async *#exec(step: Step, ctx: RunContext, signal: AbortSignal | undefined): AsyncGenerator<EngineEvent> {
-    const client = this.#registry.client(step.agent);
+    const policy = resolveRetry(this.#retry, step.retry, this.#retryable);
+    const candidates = [step.agent, ...(step.fallback ?? [])];
+    let lastError: RpcError | undefined;
+
     yield { type: "step-started", stepId: step.id, agent: step.agent };
 
-    // Reset to declared defaults each step, then layer this step's config. Without the
+    for (let c = 0; c < candidates.length; c++) {
+      const agent = candidates[c];
+      if (c > 0) yield { type: "step-fallback", stepId: step.id, from: candidates[c - 1], to: agent };
+
+      for (let attempt = 1; attempt <= policy.maxAttempts; attempt++) {
+        if (signal?.aborted) throw new RunCanceled();
+        try {
+          const parts = yield* this.#attempt(step, agent, ctx, signal, policy.timeoutMs);
+          ctx.set(step.id, parts);
+          yield { type: "step-completed", stepId: step.id, parts };
+          return;
+        } catch (err) {
+          if (err instanceof RunCanceled) throw err;
+          const error = err instanceof StepFailed ? err.error : toRpcError(err);
+          lastError = error;
+          const isLast = attempt >= policy.maxAttempts;
+          if (isLast || !policy.retryable(error, attempt)) break; // give up on this agent
+          const delayMs = computeBackoff(policy, attempt);
+          yield { type: "step-retry", stepId: step.id, agent, attempt, maxAttempts: policy.maxAttempts, delayMs, error };
+          await abortableSleep(delayMs, signal); // throws RunCanceled on abort
+        }
+      }
+    }
+
+    // Every candidate exhausted — surface the last failure and fail the run (fail-fast).
+    const error = lastError ?? { code: JsonRpcCodes.InternalError, message: `Step "${step.id}" failed.` };
+    yield { type: "step-failed", stepId: step.id, error };
+    throw new StepFailed(error);
+  }
+
+  /** One attempt against one agent. Streams progress; returns its result parts on
+   *  success, or throws (StepFailed for a step-level failure, RunCanceled if the run
+   *  was aborted). Does NOT emit step-started/step-failed — its caller (#exec) owns those. */
+  async *#attempt(
+    step: Step,
+    agentName: string,
+    ctx: RunContext,
+    signal: AbortSignal | undefined,
+    timeoutMs: number | undefined,
+  ): AsyncGenerator<EngineEvent, Part[]> {
+    const client = this.#registry.client(agentName);
+
+    // Reset to declared defaults each attempt, then layer this step's config. Without the
     // reset, a prior step's config would leak onto a later step that shares the agent
-    // (the registry holds one shared client). Sequential execution makes this safe;
-    // concurrent reuse with differing configs would need per-use client instances.
+    // (the registry holds one shared client). Sequential execution makes this safe.
     await client.configure(step.config ?? {});
 
     const input = resolveBindings(step.input, ctx);
     const task = await client.submit(input);
+
+    // A per-attempt timeout cancels the child and is surfaced as a (retryable) timeout.
+    let timedOut = false;
+    const timer =
+      timeoutMs !== undefined && timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            void client.cancel(task.id).catch(() => {});
+          }, timeoutMs)
+        : undefined;
 
     let onAbort: (() => void) | undefined;
     if (signal) {
@@ -263,33 +349,30 @@ export class Engine {
           // event stream only closes on a terminal state). Fail fast and cancel the child.
           // Deferred: bridging child input upward (durable, cross-process) — see DESIGN.md.
           await client.cancel(task.id).catch(() => {});
-          const error: RpcError = {
+          throw new StepFailed({
             code: ErrorCodes.CapabilityNotSupported,
-            message: `Step "${step.id}" agent "${step.agent}" requested input; nested input-required is not yet supported.`,
-          };
-          yield { type: "step-failed", stepId: step.id, error };
-          throw new StepFailed(error);
+            message: `Step "${step.id}" agent "${agentName}" requested input; nested input-required is not yet supported.`,
+          });
         }
         // result/error are read authoritatively from the final task below.
       }
     } finally {
+      if (timer) clearTimeout(timer);
       if (signal && onAbort) signal.removeEventListener("abort", onAbort);
     }
 
     const final = await client.get(task.id);
-    if (final.state === "canceled") throw new RunCanceled();
-    if (final.state !== "completed") {
-      const error: RpcError = final.error ?? {
-        code: JsonRpcCodes.InternalError,
-        message: `Step "${step.id}" ended ${final.state} with no result.`,
-      };
-      yield { type: "step-failed", stepId: step.id, error };
-      throw new StepFailed(error);
+    if (final.state === "canceled") {
+      // Distinguish a timeout-cancel (retryable step failure) from a run-abort (terminal).
+      if (timedOut) throw new StepFailed({ code: JsonRpcCodes.InternalError, message: `Step "${step.id}" timed out after ${timeoutMs}ms.` });
+      throw new RunCanceled();
     }
-
-    const parts = final.result?.parts ?? [];
-    ctx.set(step.id, parts);
-    yield { type: "step-completed", stepId: step.id, parts };
+    if (final.state !== "completed") {
+      throw new StepFailed(
+        final.error ?? { code: JsonRpcCodes.InternalError, message: `Step "${step.id}" ended ${final.state} with no result.` },
+      );
+    }
+    return final.result?.parts ?? [];
   }
 
   /** Dependency order over a plan's not-yet-completed steps (Kahn; detects cycles). */

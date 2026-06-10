@@ -2,6 +2,7 @@
 // output, and later steps reference prior outputs as bindings. Dependencies are
 // derived from those references — there is no separate edge list to keep in sync.
 import type { Artifact, Part, AgentConfig, RpcError } from "@agentcompose/sdk";
+import type { RetryConfig } from "./retry.ts";
 
 /** How a step's input is assembled from the goal and prior step outputs. */
 export type Binding =
@@ -19,6 +20,11 @@ export interface Step {
   input: Binding[];
   /** Per-step configuration of the agent component (validated by the agent). */
   config?: AgentConfig;
+  /** Per-step retry knobs, overriding the engine default. JSON-only (serializable). */
+  retry?: RetryConfig;
+  /** Agents to try, in order, if the primary agent exhausts its attempts or fails
+   *  non-retryably. Each fallback gets its own retry budget. */
+  fallback?: string[];
 }
 
 /**
@@ -64,6 +70,8 @@ export type EngineEvent =
   | { type: "message"; stepId: string; delta: Part }
   | { type: "artifact"; stepId: string; artifact: Artifact }
   | { type: "step-completed"; stepId: string; parts: Part[] }
+  | { type: "step-retry"; stepId: string; agent: string; attempt: number; maxAttempts: number; delayMs: number; error: RpcError }
+  | { type: "step-fallback"; stepId: string; from: string; to: string }
   | { type: "step-failed"; stepId: string; error: RpcError }
   | { type: "suspended"; reason: Pending }
   | { type: "canceled" }
