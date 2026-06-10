@@ -1,0 +1,21 @@
+{
+  "name": "@agentcompose/engine",
+  "version": "0.0.0",
+  "description": "Headless orchestration engine for AgentCompose — turn a goal into a plan and execute it across configurable agents.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22" },
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "demo:team": "node examples/run-team.ts"
+  },
+  "dependencies": {
+    "@agentcompose/sdk": "file:../sdk-typescript"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}
