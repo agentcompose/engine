@@ -29,7 +29,7 @@ export const teamAgent = defineAgent({
     ctx.progress(60, "delegating to summarizer");
     const summary = await team.call("summarizer", research.parts, { sink: ctx, signal: ctx.signal, forwardMessages: true });
 
-    ctx.artifact([{ kind: "data", data: { team: team.names() }, mimeType: "application/json" }], "trace.json");
+    ctx.artifact([{ kind: "json", json: { team: team.names() }, mediaType: "application/json" }], "trace.json");
     return summary.parts;
   },
 });

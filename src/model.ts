@@ -82,10 +82,10 @@ export function partsToText(parts: Part[]): string {
     .map((p) =>
       p.kind === "text"
         ? p.text
-        : p.kind === "data"
-          ? JSON.stringify(p.data)
+        : p.kind === "json"
+          ? JSON.stringify(p.json)
           : p.kind === "file"
-            ? `[file: ${p.name ?? p.mimeType ?? p.uri}]`
+            ? `[file: ${p.name ?? p.mediaType ?? p.uri}]`
             : "",
     )
     .filter(Boolean)
