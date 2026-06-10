@@ -1,0 +1,30 @@
+name: release
+
+# Publishes to npm when a GitHub Release is published.
+# Bootstrap auth: a granular automation token in the NPM_TOKEN secret.
+# (Once the package exists on npm, this can migrate to tokenless OIDC trusted publishing.)
+# Cut this release AFTER @agentcompose/sdk 0.1.0 is on npm — install resolves it.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # required for provenance attestation
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - run: npm install
+      - run: npx tsc --noEmit
+      - run: npm test
+      - run: npm run build
+      - run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
