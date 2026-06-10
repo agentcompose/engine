@@ -14,8 +14,12 @@ export type { Plan, Step, Binding, EngineEvent, Snapshot, RunStatus, Pending } f
 // Seams the product injects
 export { AgentRegistry } from "./registry.ts";
 export type { RegistryEntry } from "./registry.ts";
-export { authoredPlan } from "./planner.ts";
-export type { Planner, AuthoredPlanOptions } from "./planner.ts";
+export { authoredPlan, dynamicPlanner } from "./planner.ts";
+export type { Planner, AuthoredPlanOptions, DynamicPlannerOptions } from "./planner.ts";
+// The planner's model seam (the "decide" port) + a no-network reference/test decider.
+// Real model adapters are opt-in: `@agentcompose/engine/adapters/openai`.
+export { ScriptedDecider, partsToText } from "./model.ts";
+export type { Decider, Decision, Action, DecisionRequest, Observation, AgentChoice } from "./model.ts";
 export { allowAll, approveWhen } from "./governor.ts";
 export type { Governor, GovernorDecision } from "./governor.ts";
 export { InMemoryCheckpointStore } from "./checkpoint.ts";

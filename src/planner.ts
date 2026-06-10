@@ -3,8 +3,14 @@
 // planner returns the steps to run now (or done). Static workflows and dynamic
 // agents are both just planners — the difference is how many steps they return
 // per round (the ReAct↔ReWOO dial).
-import type { Plan, Step } from "./types.ts";
+import { AgentError, JsonRpcCodes } from "@agentcompose/sdk";
+import type { Part } from "@agentcompose/sdk";
+import type { Plan, Step, Binding } from "./types.ts";
 import type { RunContext } from "./context.ts";
+import type { AgentRegistry } from "./registry.ts";
+import type { Decider, AgentChoice } from "./model.ts";
+import { partsToText } from "./model.ts";
+import { resolveBindings } from "./binding.ts";
 
 export interface Planner {
   next(goal: import("@agentcompose/sdk").Part[], ctx: RunContext): Promise<Plan> | Plan;
@@ -43,4 +49,86 @@ export function authoredPlan(steps: Step[], opts: AuthoredPlanOptions = {}): Pla
       return { steps };
     },
   };
+}
+
+export interface DynamicPlannerOptions {
+  /** The model seam — an adapter that turns a DecisionRequest into an Action. */
+  decider: Decider;
+  /** Source of the agent catalog the decider chooses from. */
+  registry: AgentRegistry;
+  /** Safety cap on rounds (steps) before the run is failed. Default 16. */
+  maxRounds?: number;
+}
+
+/**
+ * A dynamic planner: each round it asks the `decider` what to do next, given the
+ * goal, the observations so far, and the available agents. One step per round —
+ * the ReAct pole. The planner itself is provider-neutral pure logic; all model
+ * contact lives behind the `Decider` port.
+ *
+ * Re-derivable on resume: it is a pure function of (goal, completed outputs in ctx)
+ * plus the decider. With a re-derivable decider (e.g. a real model prompted only
+ * with restored observations), resuming re-asks from the same state — so the plan
+ * need not be persisted; only step outputs are. The next step id is `step-N` where
+ * N is the number of completed steps, which keeps ids stable across resume.
+ */
+export function dynamicPlanner(opts: DynamicPlannerOptions): Planner {
+  const maxRounds = opts.maxRounds ?? 16;
+  return {
+    async next(goal, ctx) {
+      const done = ctx.completed();
+      if (done.length >= maxRounds) {
+        throw new AgentError(
+          JsonRpcCodes.InternalError,
+          `Dynamic planner exceeded maxRounds=${maxRounds} without finishing.`,
+        );
+      }
+
+      const choices: AgentChoice[] = [];
+      for (const name of opts.registry.names()) {
+        const d = await opts.registry.describe(name);
+        const caps = d.capabilities?.map((c) => c.description).filter(Boolean).join("; ") ?? "";
+        choices.push({ name, title: d.name, description: caps });
+      }
+
+      const action = await opts.decider.decide({
+        goal: partsToText(goal),
+        observations: done.map((id) => ({ stepId: id, text: partsToText(ctx.get(id)) })),
+        choices,
+      });
+
+      if (action.kind === "finish") {
+        const result = action.use?.length
+          ? resolveBindings(toBindings(action.use, ctx), ctx)
+          : [{ kind: "text", text: action.text ?? "" } satisfies Part];
+        return { steps: [], done: true, result };
+      }
+
+      if (action.kind !== "call") {
+        throw new AgentError(JsonRpcCodes.InvalidParams, `Decider returned unknown action kind.`);
+      }
+      if (!opts.registry.has(action.agent)) {
+        throw new AgentError(
+          JsonRpcCodes.InvalidParams,
+          `Decider chose unregistered agent "${action.agent}". Available: ${opts.registry.names().join(", ")}.`,
+        );
+      }
+
+      const input: Binding[] = [];
+      if (action.instruction) input.push({ from: "const", parts: [{ kind: "text", text: action.instruction }] });
+      input.push(...toBindings(action.use ?? [], ctx));
+      if (input.length === 0) input.push({ from: "goal" });
+
+      return { steps: [{ id: `step-${done.length}`, agent: action.agent, input }] };
+    },
+  };
+}
+
+/** Map decider `use` tokens ("goal" | a prior step id) to executor bindings. */
+function toBindings(use: string[], ctx: RunContext): Binding[] {
+  return use.map((u) => {
+    if (u === "goal") return { from: "goal" } satisfies Binding;
+    if (ctx.has(u)) return { from: "step", ref: u } satisfies Binding;
+    throw new AgentError(JsonRpcCodes.InvalidParams, `Decider referenced unknown step "${u}".`);
+  });
 }

@@ -107,3 +107,62 @@ persistence, and a real governor each drop in behind a seam that already exists.
 
 Build one durable, governed, single-pass executor well **before** dynamic planning or
 multi-agent depth. More agents don't make a better system; better boundaries do.
+
+## The dynamic planner: the `decide` seam (Tier A)
+
+The engine is itself an agent (`asAgent()` later), so the rule we give agent authors
+applies to its own brain: **be a thin adapter over a mature, purpose-built tool — not
+a from-scratch raw-LLM loop, and not a whole framework bent to fit.** Applied per
+sub-problem:
+
+| Sub-problem | Mature, purpose-built solver? | Verdict |
+|---|---|---|
+| The durable, governed plan/execute loop | No — existing agent runtimes bring their own colliding loop+state | **build from scratch** (this engine) |
+| Talk to a model across providers | Yes — **gateways** (LiteLLM/OpenRouter/Portkey) + an OpenAI-compatible call; or pi-ai / Token.js / Vercel in-process | **wrap**, behind a port |
+| Get a schema-valid decision out of a model | Yes — provider-native structured output / Instructor | **wrap**, behind a port |
+| Assemble prompt context, map decision → Step | No — our domain glue | **ours** (trivial) |
+
+So the planner splits into a tiny **port** the engine core owns, and an **adapter**
+that is the only thing touching a model:
+
+```ts
+// Engine core — ZERO model dependencies. The whole model seam.
+type Action =
+  | { kind: "call"; agent: string; instruction?: string; use?: string[] }   // use: "goal" | a step id
+  | { kind: "finish"; use?: string[]; text?: string };
+interface Decider { decide(req: DecisionRequest): Promise<Action> }          // THE PORT
+
+dynamicPlanner({ decider, registry, maxRounds }): Planner   // pure logic over the port
+ScriptedDecider                                            // no-network reference/test decider
+```
+
+- **Connection portability is an ops choice, not a code dependency.** The reference
+  adapter (`@agentcompose/engine/adapters/openai`) is a raw `fetch` to a configurable
+  OpenAI-compatible `baseUrl` — point it at a gateway to reach any provider, exactly
+  as the spec's `Provider { baseUrl, apiKey }` already assumes. It pulls **no npm deps**.
+- **Structured output, not prompt-scraping.** The adapter requests JSON-schema-shaped
+  output so the model produces the `Action`; parsing lives only in the adapter.
+- **Everything is swappable at the port.** Pi's connection layer (`@earendil-works/pi-ai`),
+  the Vercel AI SDK, Instructor, or provider-native structured outputs are alternative
+  `Decider`s — the engine core and `dynamicPlanner` never change.
+- **Re-derivable on resume.** `dynamicPlanner` is a pure function of (goal, completed
+  outputs) + the decider, with step ids `step-N` from the completed count. A decider
+  prompted only with restored observations re-asks from the same state, so the plan is
+  **not persisted** — only step outputs are. (Deferred: a *stateful* decider with a
+  private scratchpad would need that scratchpad persisted; threading `AbortSignal` into
+  `Planner.next` for cancellable planning.)
+
+## Roadmap to a complete engine
+
+The durable deterministic chassis (above) and the Tier-A dynamic planner (this section)
+are built. What "complete" still needs, in order of leverage:
+
+| Tier | What | State |
+|---|---|---|
+| **chassis** | durable · governed · checkpoint/resume · fail-fast · cancel | ✅ built |
+| **A — goal-based brain** | dynamic planner over the `decide` port; observe→re-plan loop | ✅ built (one reference adapter; observe→re-plan via single-step rounds) |
+| **B — robustness** | retry/backoff/fallback (behind `step-failed`); **parallel** ready steps (the DAG already encodes independence); real persistence + per-`runId` locking; exactly-once via idempotency keys | deferred |
+| **C — composable & complete** | `asAgent()` (recursive composition); cross-run **memory** (consumed by the planner); typed capability I/O (spec Scope B); durable event log + tracing | deferred |
+
+Guiding rule throughout: **decide build-vs-wrap per seam** — own the loop; wrap only
+mature, purpose-built solvers for the narrow sub-problems around it.

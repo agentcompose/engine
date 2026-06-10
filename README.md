@@ -22,7 +22,7 @@ no presentation. It exposes interfaces a product injects.
 | Part | Role | Status |
 |------|------|--------|
 | **`Coordinator`** | the **hands** — execute calls across agents, wire output→input, forward progress, propagate cancel/errors | ✅ built |
-| **`Engine`** | the **brain + chassis** — accept a *goal*, run a *plan* (deterministic now; dynamic later) through governance, durably and resumably | ✅ durable deterministic slice |
+| **`Engine`** | the **brain + chassis** — accept a *goal*, run a *plan* (authored **or** dynamically decided) through governance, durably and resumably | ✅ chassis + dynamic planner |
 
 The difference is **goal-based vs imperative**: you hand the Coordinator explicit
 calls; you hand the Engine a *goal* and it decides the calls. A master agent is
@@ -53,13 +53,14 @@ await team.close();
 ```bash
 npm install            # links @agentcompose/sdk via file: for now
 
-npm run demo:engine "AI agent interoperability"   # Engine: goal → plan → governed, checkpointed run
-npm run demo:team   "AI agent interoperability"   # Coordinator: a master agent composing two members
+npm run demo:engine  "AI agent interoperability"   # authored workflow: goal → fixed DAG
+npm run demo:dynamic "AI agent interoperability"   # dynamic: goal → decided step-by-step (offline)
+npm run demo:team    "AI agent interoperability"   # Coordinator: a master agent composing two members
 ```
 
-The engine demo runs a deterministic two-step workflow (researcher → summarizer,
-wired by variable reference) and streams plan/step/result events. See
-[DESIGN.md](./DESIGN.md) for the architecture and the reasons behind it.
+The engine demos run a researcher → summarizer flow — the first as a fixed DAG, the
+second decided a step at a time by a (scripted, offline) brain over the `decide` port.
+See [DESIGN.md](./DESIGN.md) for the architecture and the reasons behind it.
 
 ## Develop
 
@@ -81,11 +82,17 @@ loop, variable-reference DAG execution, dependency ordering, runtime governance
 human approval, fail-fast, and cancellation. Reference in-memory `CheckpointStore`
 and an `authoredPlan` planner.
 
-**Deferred (clearly):** a dynamic/LLM planner (the seam exists) and cross-run
-**memory** (lands with that planner, its first consumer); parallel execution of
-independent steps (the DAG already encodes the graph); retry/backoff; exactly-once
-on resume (at-least-once today — the spec's idempotency keys are the path), and
-cross-process concurrency control in the checkpoint store. See `DESIGN.md`.
+**Built — the dynamic planner (Tier A):** a goal-driven `dynamicPlanner` over a tiny
+`decide` port (engine core stays model-dependency-free), a no-network `ScriptedDecider`,
+and one opt-in reference adapter (`@agentcompose/engine/adapters/openai`) — a raw `fetch`
+to any OpenAI-compatible `baseUrl`, so a gateway handles provider portability. Pi's
+`pi-ai`, the Vercel AI SDK, Instructor, or provider-native structured outputs are
+drop-in alternatives at the same port.
+
+**Deferred (clearly):** retry/backoff/fallback (behind `step-failed`); parallel
+execution of independent steps (the DAG already encodes the graph); real persistence
++ per-`runId` locking; exactly-once via idempotency keys; `asAgent()` recursion;
+cross-run **memory** (its first consumer is the planner); typed capability I/O. See `DESIGN.md`.
 
 ## License
 

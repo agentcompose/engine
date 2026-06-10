@@ -5,12 +5,16 @@
   "type": "module",
   "license": "Apache-2.0",
   "engines": { "node": ">=22" },
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts",
+    "./adapters/openai": "./src/adapters/openai-compatible.ts"
+  },
   "scripts": {
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "demo:team": "node examples/run-team.ts",
-    "demo:engine": "node examples/run-engine.ts"
+    "demo:engine": "node examples/run-engine.ts",
+    "demo:dynamic": "node examples/run-dynamic.ts"
   },
   "dependencies": {
     "@agentcompose/sdk": "file:../sdk-typescript"
