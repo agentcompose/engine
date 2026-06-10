@@ -1,10 +1,14 @@
 # @agentcompose/engine
 
+[![npm](https://img.shields.io/npm/v/@agentcompose/engine.svg)](https://www.npmjs.com/package/@agentcompose/engine)
+[![provenance](https://img.shields.io/badge/npm-provenance-blue.svg)](https://www.npmjs.com/package/@agentcompose/engine)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
 > Headless orchestration for [AgentCompose](https://github.com/agentcompose/spec) —
 > turn a **goal** into a **plan** and execute it across configurable agents.
 > Built on [`@agentcompose/sdk`](https://github.com/agentcompose/sdk-typescript).
 
-**Status:** `0.0.x` early · **License:** Apache-2.0 · **Requires:** Node ≥ 22
+**Version:** `0.1.0` · **License:** Apache-2.0 · **Requires:** Node ≥ 18.19
 
 This is layer **③** of the AgentCompose stack — the engine that products (UI, agent
 builders, goal-based assistants) build on. It is **headless**: no UI, no database,
@@ -60,8 +64,6 @@ Ships compiled JS + type declarations; runs on Node ≥ 18.19. Depends on
 ## Try the demos
 
 ```bash
-npm install            # install dependencies
-
 npm run demo:engine  "AI agent interoperability"   # authored workflow: goal → fixed DAG
 npm run demo:dynamic "AI agent interoperability"   # dynamic: goal → decided step-by-step (offline)
 npm run demo:nested  "AI agent interoperability"   # recursion: an engine running as a step inside an engine
