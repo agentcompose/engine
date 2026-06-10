@@ -127,7 +127,8 @@ export function dynamicPlanner(opts: DynamicPlannerOptions): Planner {
 /** Map decider `use` tokens ("goal" | a prior step id) to executor bindings. */
 function toBindings(use: string[], ctx: RunContext): Binding[] {
   return use.map((u) => {
-    if (u === "goal") return { from: "goal" } satisfies Binding;
+    // Tolerate model casing/variants for the goal token ("goal", "GOAL", "Goal").
+    if (u.trim().toLowerCase() === "goal") return { from: "goal" } satisfies Binding;
     if (ctx.has(u)) return { from: "step", ref: u } satisfies Binding;
     throw new AgentError(JsonRpcCodes.InvalidParams, `Decider referenced unknown step "${u}".`);
   });

@@ -131,6 +131,48 @@ function parseAction(content: string): Action {
 }
 
 /**
+ * Read the assistant message content from either a normal JSON chat response or a
+ * Server-Sent-Events stream. Some OpenAI-compatible gateways stream by default
+ * (content-type: text/event-stream) even when `stream` was not requested; this
+ * concatenates the streamed deltas so the decider works against them too.
+ */
+async function readContent(res: { headers: { get(name: string): string | null }; text(): Promise<string>; json(): Promise<unknown> }): Promise<string | undefined> {
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("text/event-stream")) {
+    return readSSEContent(await res.text());
+  }
+  const raw = await res.text();
+  // Branch on the body too: a gateway may stream without the right content-type.
+  if (/^\s*data:/.test(raw)) return readSSEContent(raw);
+  let data: { choices?: { message?: { content?: string } }[] };
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new AgentError(JsonRpcCodes.InternalError, "Decider model returned a non-JSON response.");
+  }
+  return data.choices?.[0]?.message?.content;
+}
+
+function readSSEContent(text: string): string {
+  let out = "";
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t.startsWith("data:")) continue;
+    const payload = t.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const j = JSON.parse(payload) as {
+        choices?: { delta?: { content?: string }; message?: { content?: string } }[];
+      };
+      out += j.choices?.[0]?.delta?.content ?? j.choices?.[0]?.message?.content ?? "";
+    } catch {
+      // ignore keep-alive / non-JSON lines
+    }
+  }
+  return out;
+}
+
+/**
  * Build a Decider over an OpenAI-compatible chat endpoint. Requests JSON-schema-shaped
  * structured output (with a JSON-object fallback for gateways that don't honor schema),
  * so the model — not hand-rolled prompt-scraping — produces the action.
@@ -158,8 +200,7 @@ export function openAICompatibleDecider(opts: OpenAICompatibleOptions): Decider 
         throw new AgentError(JsonRpcCodes.InternalError, `Decider model HTTP ${res.status}: ${body.slice(0, 300)}`);
       }
 
-      const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-      const content = data.choices?.[0]?.message?.content;
+      const content = await readContent(res);
       if (!content) throw new AgentError(JsonRpcCodes.InternalError, "Decider model returned an empty response.");
       return parseAction(content);
     },

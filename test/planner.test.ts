@@ -134,3 +134,26 @@ test("openAICompatibleDecider surfaces HTTP errors", async () => {
     /HTTP 401/,
   );
 });
+
+test("openAICompatibleDecider parses a streamed (text/event-stream) response", async () => {
+  // Some gateways stream by default even when stream was not requested.
+  const fakeFetch = (async () => {
+    const d1 = JSON.stringify({ choices: [{ delta: { content: '{"kind":"fin' } }] });
+    const d2 = JSON.stringify({ choices: [{ delta: { content: 'ish","text":"hi"}' } }] });
+    const body = `data: ${d1}\n\ndata: ${d2}\n\ndata: [DONE]\n\n`;
+    return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as unknown as typeof fetch;
+  const decider = openAICompatibleDecider({ baseUrl: "https://gw/v1", apiKey: "k", model: "m", fetchImpl: fakeFetch });
+  const action = await decider.decide({ goal: "g", observations: [], choices: [] });
+  assert.deepEqual(action, { kind: "finish", use: undefined, text: "hi" });
+});
+
+test("dynamicPlanner tolerates a model that uses the 'GOAL' token (any case)", async () => {
+  const decider = new ScriptedDecider((): Action => ({ kind: "finish", use: ["GOAL"] }));
+  const reg = new AgentRegistry({ upper: inProcess(upper) });
+  const engine = new Engine({ registry: reg, planner: dynamicPlanner({ decider, registry: reg }) });
+  const events = await collect(engine.run(goal("echo me"), { runId: "caseg" }));
+  const result = events.find((e) => e.type === "result");
+  assert.ok(result && result.type === "result");
+  assert.equal(textOf(result.parts), "echo me");
+});
