@@ -9,7 +9,8 @@
   "scripts": {
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "demo:team": "node examples/run-team.ts"
+    "demo:team": "node examples/run-team.ts",
+    "demo:engine": "node examples/run-engine.ts"
   },
   "dependencies": {
     "@agentcompose/sdk": "file:../sdk-typescript"

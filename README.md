@@ -22,7 +22,7 @@ no presentation. It exposes interfaces a product injects.
 | Part | Role | Status |
 |------|------|--------|
 | **`Coordinator`** | the **hands** — execute calls across agents, wire output→input, forward progress, propagate cancel/errors | ✅ built |
-| **`Engine`** | the **brain** — accept a *goal*, produce a *plan* (deterministic workflow **or** dynamically), run it through the Coordinator | 🚧 next |
+| **`Engine`** | the **brain + chassis** — accept a *goal*, run a *plan* (deterministic now; dynamic later) through governance, durably and resumably | ✅ durable deterministic slice |
 
 The difference is **goal-based vs imperative**: you hand the Coordinator explicit
 calls; you hand the Engine a *goal* and it decides the calls. A master agent is
@@ -48,15 +48,18 @@ await team.close();
 `Coordinator` is transport-agnostic — members may be `inProcess` or `spawnStdio`
 (subprocess) clients; the code is identical.
 
-## Try the demo
+## Try the demos
 
 ```bash
 npm install            # links @agentcompose/sdk via file: for now
-npm run demo:team "AI agent interoperability"
+
+npm run demo:engine "AI agent interoperability"   # Engine: goal → plan → governed, checkpointed run
+npm run demo:team   "AI agent interoperability"   # Coordinator: a master agent composing two members
 ```
 
-A master "Research Team" agent (itself an AgentCompose agent) coordinates a
-researcher → summarizer, forwarding their progress and streaming the final summary.
+The engine demo runs a deterministic two-step workflow (researcher → summarizer,
+wired by variable reference) and streams plan/step/result events. See
+[DESIGN.md](./DESIGN.md) for the architecture and the reasons behind it.
 
 ## Develop
 
@@ -70,12 +73,18 @@ npm run typecheck
 > while neither package is published. A proper release chain (publish the SDK,
 > then depend on the published version) comes later.
 
-## What's next (the Engine brain)
+## What's built, and what's next
 
-`Engine.run(goal, { agents, onApproval, memory })` → an event stream of plan steps
-and results. The first slice executes an **explicit plan** over registered agents
-(deterministic workflow); a **planner** that generates plans from a goal, plus
-memory and human-in-the-loop (via the `input-required` state), follow.
+**Built — the durable deterministic slice:** `Engine.run`/`resume`, the planner
+loop, variable-reference DAG execution, dependency ordering, runtime governance
+(allow/block/rewrite/approve), per-step checkpointing, durable suspend/resume for
+human approval, fail-fast, and cancellation. Reference in-memory `CheckpointStore`
+and `MemoryProvider`; an `authoredPlan` planner.
+
+**Deferred (clearly):** a dynamic/LLM planner (the seam exists), parallel execution
+of independent steps (the DAG already encodes the graph), retry/backoff, exactly-once
+on resume (at-least-once today — the spec's idempotency keys are the path), and
+cross-process concurrency control in the checkpoint store. See `DESIGN.md`.
 
 ## License
 

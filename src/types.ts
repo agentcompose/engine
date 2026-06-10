@@ -1,0 +1,68 @@
+// Engine types. The plan/step model is a variable-reference DAG: a step names its
+// output, and later steps reference prior outputs as bindings. Dependencies are
+// derived from those references — there is no separate edge list to keep in sync.
+import type { Artifact, Part, AgentConfig, RpcError } from "@agentcompose/sdk";
+
+/** How a step's input is assembled from the goal and prior step outputs. */
+export type Binding =
+  | { from: "goal" } // the run's goal parts
+  | { from: "step"; ref: string } // another step's output, by its id
+  | { from: "const"; parts: Part[] }; // literal parts
+
+/** One unit of work: run a registered agent with an assembled input. */
+export interface Step {
+  /** Unique within a plan; names this step's output for later references. */
+  id: string;
+  /** Name of a registered agent (see AgentRegistry). */
+  agent: string;
+  /** Input assembly. Resolved left-to-right and concatenated. */
+  input: Binding[];
+  /** Per-step configuration of the agent component (validated by the agent). */
+  config?: AgentConfig;
+}
+
+/**
+ * What the planner decides each round. `steps` is a DAG to run now; `done`
+ * signals completion with an optional final `result`. Returning the whole DAG
+ * once behaves like ReWOO; returning one step per round behaves like ReAct.
+ */
+export interface Plan {
+  steps: Step[];
+  done?: boolean;
+  result?: Part[];
+}
+
+/** Lifecycle of a run. Mirrors the spec's task states where they overlap. */
+export type RunStatus = "running" | "suspended" | "completed" | "failed" | "canceled";
+
+/** Why a suspended run is waiting. Currently only human approval of a step. */
+export type Pending = { kind: "approval"; stepId: string };
+
+/**
+ * The complete, serializable state needed to resume a run in a fresh process.
+ * Deliberately JSON-only: a database- or file-backed CheckpointStore is a drop-in.
+ */
+export interface Snapshot {
+  runId: string;
+  goal: Part[];
+  status: RunStatus;
+  /** Completed step outputs, keyed by step id. The source of truth for resume. */
+  outputs: Record<string, Part[]>;
+  pending?: Pending;
+  result?: Part[];
+  error?: RpcError;
+}
+
+/** Events streamed from a run. The orchestration-level event log. */
+export type EngineEvent =
+  | { type: "plan"; steps: { id: string; agent: string }[] }
+  | { type: "step-started"; stepId: string; agent: string }
+  | { type: "progress"; stepId: string; percent?: number; message?: string }
+  | { type: "message"; stepId: string; delta: Part }
+  | { type: "artifact"; stepId: string; artifact: Artifact }
+  | { type: "step-completed"; stepId: string; parts: Part[] }
+  | { type: "step-failed"; stepId: string; error: RpcError }
+  | { type: "suspended"; reason: Pending }
+  | { type: "canceled" }
+  | { type: "result"; parts: Part[] }
+  | { type: "error"; error: RpcError };
