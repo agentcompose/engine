@@ -91,7 +91,7 @@ export interface Snapshot {
 export type EngineEvent =
   | { type: "run-started"; runId: string }
   | { type: "plan"; steps: { id: string; agent: string }[] }
-  | { type: "step-started"; stepId: string; agent: string }
+  | { type: "step-started"; stepId: string; agent: string; instruction?: string; inputFrom?: string[] }
   | { type: "progress"; stepId: string; percent?: number; message?: string }
   | { type: "message"; stepId: string; delta: Part }
   | { type: "artifact"; stepId: string; artifact: Artifact }

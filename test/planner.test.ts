@@ -55,6 +55,10 @@ test("dynamic planner drives a multi-step run from a goal", async () => {
 
   const order = events.filter((e) => e.type === "step-completed").map((e: any) => e.stepId);
   assert.deepEqual(order, ["step-0", "step-1"]);
+  // step-started carries input provenance: step-0 reads the goal, step-1 reads step-0's output.
+  const started = events.filter((e) => e.type === "step-started") as any[];
+  assert.deepEqual(started.find((e) => e.stepId === "step-0").inputFrom, ["goal"]);
+  assert.deepEqual(started.find((e) => e.stepId === "step-1").inputFrom, ["step-0"]);
   const result = events.find((e) => e.type === "result");
   assert.ok(result && result.type === "result");
   assert.equal(textOf(result.parts), "HELLO!");

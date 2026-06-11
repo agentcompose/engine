@@ -359,7 +359,7 @@ export class Engine {
       type: "span-start",
       span: { traceId: ctx.traceId!, spanId: stepSpanId, parentSpanId: ctx.rootSpanId, name: step.id, kind: "step", startTime: Date.now(), attributes: { "agent.id": step.agent } },
     };
-    yield { type: "step-started", stepId: step.id, agent: step.agent };
+    yield { type: "step-started", stepId: step.id, agent: step.agent, ...stepInput(step) };
 
     for (let c = 0; c < candidates.length; c++) {
       const agent = candidates[c];
@@ -579,4 +579,28 @@ export class Engine {
     }
     return out;
   }
+}
+
+/**
+ * Summarize a step's input for the `step-started` event so consumers can see what a step
+ * RECEIVED, not just what it produced: the planner's literal `instruction` (joined `const`
+ * text parts) and `inputFrom` — the provenance of fed-in content ("goal" and/or prior step
+ * ids). The fed-in content itself is not duplicated here; it is already visible as the
+ * referenced step's output.
+ */
+function stepInput(step: Step): { instruction?: string; inputFrom?: string[] } {
+  const instruction = step.input
+    .filter((b): b is { from: "const"; parts: Part[] } => b.from === "const")
+    .flatMap((b) => b.parts)
+    .filter((p): p is Part & { kind: "text"; text: string } => p.kind === "text")
+    .map((p) => p.text)
+    .join("\n")
+    .trim();
+  const inputFrom = step.input
+    .map((b) => (b.from === "goal" ? "goal" : b.from === "step" ? b.ref : undefined))
+    .filter((x): x is string => x !== undefined);
+  return {
+    ...(instruction ? { instruction } : {}),
+    ...(inputFrom.length ? { inputFrom } : {}),
+  };
 }

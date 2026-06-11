@@ -6,6 +6,13 @@ additive changes; breaking changes are avoided but possible while the contract s
 
 ## Unreleased
 
+### Added
+- **`step-started` now carries the step's input** — `instruction?` (the planner's literal
+  instruction for the step) and `inputFrom?` (provenance refs: `"goal"` and/or prior step
+  ids whose output is fed in). This makes the DAG wiring observable — a consumer can see
+  that, e.g., an `analyze` step consumed a `research` step's output, not just what each
+  step produced. Additive and optional; existing consumers are unaffected.
+
 ### Fixed
 - **Decider no longer fails with "empty response" on streaming-quirky gateways, and
   tolerates gateways that reject or ignore `response_format`.** The reference
