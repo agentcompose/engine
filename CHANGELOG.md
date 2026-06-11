@@ -4,6 +4,21 @@ All notable changes to `@agentcompose/engine` are documented here. This project 
 to [Semantic Versioning](https://semver.org/). Pre-1.0, minor versions may introduce
 additive changes; breaking changes are avoided but possible while the contract settles.
 
+## Unreleased
+
+### Added
+- **Nested HITL — escalate a required decision to the controller (Tier 1, replay mode).**
+  A delegated agent that calls `requestInput` no longer fails the run; the request is an
+  escalation to the engine, which acts as a *decider*. New `EscalationPolicy` seam
+  (`escalate` / `resolve` / `deny`; default `escalateAll`, plus `resolveWith`). On
+  `escalate` the run **suspends durably** (`Pending { kind: "input", address, prompt }`)
+  and resumes via `resume(runId, { inputs })` or the `engine.provideInput(runId, parts,
+  { stepId, askIndex? })` sugar — the asking step re-runs and the recorded answer is
+  replayed into the worker. `Snapshot.inputs` persists answers; `InputAddress` /
+  `inputKey` are exported. `asAgent()` bridges a nested worker's escalation to the
+  wrapper's own `input-required`, so "escalate to my controller" works recursively in
+  process. Design: `docs/nested-hitl.md`. SemVer-additive.
+
 ## 0.1.0 — 2026-06-10
 
 First published release. The headless orchestration engine: turn a goal into a plan and

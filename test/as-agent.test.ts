@@ -132,3 +132,44 @@ test("asAgent: governor approval bridges to the agent's input-required state", a
   assert.equal(textOf(final.result?.parts ?? []), "HELLO");
   await client.close();
 });
+
+test("asAgent: a nested worker's escalation bridges to the wrapper's input-required", async () => {
+  // An inner worker that escalates (requestInput) mid-run.
+  const clarifier = defineAgent({
+    descriptor: { id: "t.clar", name: "Clarifier", version: "1.0.0", capabilities: [{ id: "c", description: "asks" }] },
+    async handle(g, ctx) {
+      const ans = await ctx.requestInput([{ kind: "text", text: "which?" }]);
+      return [{ kind: "text", text: `${textOf(g)}/${textOf(ans)}` }];
+    },
+  });
+  const engine = new Engine({
+    registry: new AgentRegistry({ clar: inProcess(clarifier) }),
+    planner: authoredPlan([{ id: "a", agent: "clar", input: [{ from: "goal" }] }]),
+  });
+  const client = inProcess(
+    asAgent({ descriptor: { id: "x.esc", name: "Esc", version: "1.0.0", capabilities: [{ id: "c", description: "bridges" }] }, engine }),
+  );
+
+  const task = await client.submit(goal("pick"));
+  const seen: TaskEvent[] = [];
+  const pump = (async () => {
+    for await (const ev of client.events(task.id)) seen.push(ev);
+  })();
+
+  let state = (await client.get(task.id)).state;
+  while (state !== "input-required" && state !== "failed" && state !== "completed") {
+    await new Promise((r) => setTimeout(r, 5));
+    state = (await client.get(task.id)).state;
+  }
+  assert.equal(state, "input-required");
+  // The worker's prompt bubbled all the way up to the wrapper's input-required.
+  const ask = seen.find((e) => e.type === "status" && e.state === "input-required") as any;
+  assert.equal(textOf(ask.prompt), "which?");
+
+  await client.provideInput(task.id, [{ kind: "text", text: "B" }]);
+  await pump;
+  const final = await client.get(task.id);
+  assert.equal(final.state, "completed");
+  assert.equal(textOf(final.result?.parts ?? []), "pick/B");
+  await client.close();
+});

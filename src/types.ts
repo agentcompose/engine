@@ -41,10 +41,30 @@ export interface Plan {
 /** Lifecycle of a run. Mirrors the spec's task states where they overlap. */
 export type RunStatus = "running" | "suspended" | "completed" | "failed" | "canceled";
 
-/** Why a suspended run is waiting. Currently only human approval of a step.
- *  `proposed` pins the exact reviewed step so resume executes *that*, not a freshly
+/** Identifies exactly which escalation is waiting — the route-down target.
+ *  `askIndex` is the 0-based count of `requestInput` calls within a step, so a
+ *  worker that asks more than once (multi-turn) addresses each turn distinctly. */
+export interface InputAddress {
+  stepId: string;
+  askIndex: number;
+  // path?: string[];  // Tier 3: recursive stepId stack across asAgent() boundaries
+  // taskId?: string;  // Tier 2: the live parked child (hold-open mode)
+}
+
+/** Stable key for an answer in `Snapshot.inputs` / `RunContext` inputs. */
+export function inputKey(stepId: string, askIndex: number): string {
+  return `${stepId}#${askIndex}`;
+}
+
+/** Why a suspended run is waiting.
+ *  - `approval`: a human must approve a step *before* it runs.
+ *  - `input`: a delegated agent escalated a required decision to the engine, and the
+ *    engine escalated it onward (to its controller / the human) rather than resolving it.
+ *  `proposed` pins the exact reviewed/asking step so resume executes *that*, not a freshly
  *  re-derived one (a non-deterministic planner could otherwise drift under the same id). */
-export type Pending = { kind: "approval"; stepId: string; proposed?: Step };
+export type Pending =
+  | { kind: "approval"; stepId: string; proposed?: Step }
+  | { kind: "input"; address: InputAddress; prompt?: Part[]; proposed?: Step };
 
 /**
  * The complete, serializable state needed to resume a run in a fresh process.
@@ -56,6 +76,9 @@ export interface Snapshot {
   status: RunStatus;
   /** Completed step outputs, keyed by step id. The source of truth for resume. */
   outputs: Record<string, Part[]>;
+  /** Answers gathered for escalated inputs, keyed by `inputKey(stepId, askIndex)`.
+   *  Makes a replay-resume deterministic: the re-run feeds these back to the worker. */
+  inputs?: Record<string, Part[]>;
   pending?: Pending;
   result?: Part[];
   error?: RpcError;

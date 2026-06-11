@@ -21,6 +21,7 @@
 import { AgentError, JsonRpcCodes, defineAgent } from "@agentcompose/sdk";
 import type { AgentDescriptor, AgentDefinition, HandlerContext, Part } from "@agentcompose/sdk";
 import type { Engine, OnApproval } from "./engine.ts";
+import type { EscalationPolicy } from "./escalation.ts";
 
 export interface AsAgentOptions {
   /** Identity of the engine-as-agent (id, name, version, capabilities). */
@@ -42,6 +43,15 @@ function approvalViaInput(ctx: HandlerContext): OnApproval {
   };
 }
 
+/** Bridge a nested agent's escalation to *this* wrapper's controller: forward the
+ *  worker's prompt up via our own ctx.requestInput and resolve inline. This is exactly
+ *  "escalate to whoever controls me" applied recursively at the asAgent boundary — the
+ *  inner engine never suspends; the request bubbles to our caller (the outer engine, or
+ *  ultimately the human). Durable cross-process bubbling is a later tier (see docs). */
+function escalationViaInput(ctx: HandlerContext): EscalationPolicy {
+  return async ({ prompt }) => ({ decision: "resolve", answer: await ctx.requestInput(prompt) });
+}
+
 /**
  * Wrap an Engine as an AgentDefinition. Use it like any other agent:
  *   const teamAgent = inProcess(asAgent({ descriptor, engine }));
@@ -53,7 +63,11 @@ export function asAgent(opts: AsAgentOptions): AgentDefinition {
     async handle(goal, ctx) {
       let result: Part[] | undefined;
 
-      for await (const ev of opts.engine.run(goal, { signal: ctx.signal, onApproval: approvalViaInput(ctx) })) {
+      for await (const ev of opts.engine.run(goal, {
+        signal: ctx.signal,
+        onApproval: approvalViaInput(ctx),
+        escalation: escalationViaInput(ctx),
+      })) {
         switch (ev.type) {
           case "plan":
             ctx.progress(undefined, `plan: ${ev.steps.map((s) => `${s.id}(${s.agent})`).join(", ")}`);
@@ -82,7 +96,8 @@ export function asAgent(opts: AsAgentOptions): AgentDefinition {
             throw new AgentError(ev.error.code, ev.error.message, ev.error.data);
           case "canceled":
             return; // the shared AbortSignal already drives the task to canceled
-          // step-failed precedes error; suspended cannot occur (we supply onApproval).
+          // step-failed precedes error; suspended cannot occur (we resolve both approval
+          // and escalation inline via ctx.requestInput).
         }
       }
 

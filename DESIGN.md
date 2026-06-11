@@ -26,7 +26,9 @@ Each round: the planner proposes the next step(s); the governor decides whether 
 run; the executor runs them via the Coordinator; results land in `RunContext`; we
 checkpoint; repeat until the planner says `done`. Human-in-the-loop is the governor
 returning "needs approval" — the run **suspends** and **resumes** when the answer
-arrives (the spec's `input-required` state).
+arrives (the spec's `input-required` state). A *delegated* agent can likewise escalate a
+required decision to the engine, which decides whether to resolve, deny, or suspend and
+bubble it onward — see `docs/nested-hitl.md`.
 
 ## The one knob
 
@@ -207,7 +209,8 @@ The SDK lets you publish an agent you *wrote*; the engine lets you publish an ag
 `asAgent({ descriptor, engine })` returns an `AgentDefinition`: its handler drives
 `engine.run()` and translates the engine's event stream onto the agent's emit surface
 (progress/message/artifact), maps the final `result` out and `error` up, and **bridges
-governor approval to the agent's `input-required` state** via `ctx.requestInput`. Register
+both governor approval and a nested worker's escalation to the agent's `input-required`
+state** via `ctx.requestInput` (see `docs/nested-hitl.md`). Register
 the wrapped engine like any other agent and an outer engine calls it as a worker — so a
 composite can be a member of the next composition, recursively.
 

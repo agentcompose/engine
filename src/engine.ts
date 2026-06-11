@@ -8,14 +8,17 @@
 //
 // Scope of this implementation (the durable deterministic slice) and deferrals are
 // documented in DESIGN.md and noted inline where relevant.
-import { AgentError, JsonRpcCodes, ErrorCodes, toRpcError } from "@agentcompose/sdk";
+import { AgentError, JsonRpcCodes, toRpcError } from "@agentcompose/sdk";
 import type { Part, RpcError } from "@agentcompose/sdk";
-import type { EngineEvent, Snapshot, Step } from "./types.ts";
+import type { EngineEvent, Snapshot, Step, InputAddress } from "./types.ts";
+import { inputKey } from "./types.ts";
 import { RunContext } from "./context.ts";
 import { AgentRegistry } from "./registry.ts";
 import { resolveBindings, dependencies } from "./binding.ts";
 import { allowAll } from "./governor.ts";
 import type { Governor } from "./governor.ts";
+import { escalateAll } from "./escalation.ts";
+import type { EscalationPolicy } from "./escalation.ts";
 import type { Planner } from "./planner.ts";
 import { InMemoryCheckpointStore } from "./checkpoint.ts";
 import type { CheckpointStore } from "./checkpoint.ts";
@@ -30,6 +33,9 @@ export interface EngineOptions {
   registry: AgentRegistry;
   planner: Planner;
   governor?: Governor;
+  /** Decides what to do when a delegated agent escalates a required decision.
+   *  Default: escalate everything (suspend → bubble to the controller). */
+  escalation?: EscalationPolicy;
   checkpoints?: CheckpointStore;
   /** Engine-wide default retry knobs; per-step `Step.retry` overrides field-wise. */
   retry?: RetryConfig;
@@ -42,13 +48,19 @@ export interface RunOptions {
   runId?: string;
   signal?: AbortSignal;
   onApproval?: OnApproval;
+  /** Per-run override of the engine's escalation policy. */
+  escalation?: EscalationPolicy;
 }
 
 export interface ResumeOptions {
   signal?: AbortSignal;
   /** Approvals for suspended steps, keyed by step id. */
   approvals?: Record<string, boolean>;
+  /** Answers to escalated inputs, keyed by `inputKey(stepId, askIndex)`. */
+  inputs?: Record<string, Part[]>;
   onApproval?: OnApproval;
+  /** Per-run override of the engine's escalation policy. */
+  escalation?: EscalationPolicy;
 }
 
 /** Thrown internally when a step ends non-completed; surfaced as run failure. */
@@ -60,6 +72,20 @@ class StepFailed extends Error {
   }
 }
 class RunCanceled extends Error {}
+
+/** Thrown from #attempt when an escalation must suspend the run (not retried/failed).
+ *  Carries the address + prompt + pinned step so resume re-runs exactly this step. */
+class EscalationSuspend extends Error {
+  readonly address: InputAddress;
+  readonly prompt?: Part[];
+  readonly proposed: Step;
+  constructor(address: InputAddress, proposed: Step, prompt?: Part[]) {
+    super(`Step "${address.stepId}" escalated input (ask #${address.askIndex}).`);
+    this.address = address;
+    this.prompt = prompt;
+    this.proposed = proposed;
+  }
+}
 
 /** Sleep that rejects with RunCanceled if the run's signal aborts during the wait. */
 function abortableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
@@ -85,6 +111,7 @@ export class Engine {
   #registry: AgentRegistry;
   #planner: Planner;
   #governor: Governor;
+  #escalation: EscalationPolicy;
   #checkpoints: CheckpointStore;
   #retry: RetryConfig | undefined;
   #retryable: Retryable;
@@ -93,6 +120,7 @@ export class Engine {
     this.#registry = opts.registry;
     this.#planner = opts.planner;
     this.#governor = opts.governor ?? allowAll;
+    this.#escalation = opts.escalation ?? escalateAll;
     this.#checkpoints = opts.checkpoints ?? new InMemoryCheckpointStore();
     this.#retry = opts.retry;
     this.#retryable = opts.retryable ?? defaultRetryable;
@@ -145,15 +173,30 @@ export class Engine {
     const approved = Object.entries(opts.approvals ?? {})
       .filter(([, ok]) => ok)
       .map(([id]) => id);
-    const ctx = RunContext.from(snap, approved);
+    // Merge newly-provided answers over any already in the checkpoint, then restore.
+    const mergedInputs = { ...(snap.inputs ?? {}), ...(opts.inputs ?? {}) };
+    const ctx = RunContext.from({ ...snap, inputs: mergedInputs }, approved);
     yield { type: "run-started", runId };
     yield* this.#drive(ctx, opts);
+  }
+
+  /** Sugar over resume(): answer one escalated input and continue the run.
+   *  `askIndex` defaults to 0 (the common single-ask gate). */
+  provideInput(
+    runId: string,
+    parts: Part[],
+    target: { stepId: string; askIndex?: number },
+    opts: Omit<ResumeOptions, "inputs"> = {},
+  ): AsyncGenerator<EngineEvent> {
+    const key = inputKey(target.stepId, target.askIndex ?? 0);
+    return this.resume(runId, { ...opts, inputs: { [key]: parts } });
   }
 
   // ---- core loop ---------------------------------------------------------
 
   async *#drive(ctx: RunContext, opts: RunOptions & ResumeOptions): AsyncGenerator<EngineEvent> {
     const { signal, onApproval } = opts;
+    const escalation = opts.escalation ?? this.#escalation;
     try {
       // Honor a pinned, human-approved suspension first: run exactly the step that was
       // reviewed, not one re-derived this round (a non-deterministic planner could drift
@@ -162,8 +205,24 @@ export class Engine {
       if (pin?.kind === "approval" && pin.proposed && ctx.approved.has(pin.stepId) && !ctx.has(pin.stepId)) {
         ctx.pending = undefined;
         yield { type: "plan", steps: [{ id: pin.proposed.id, agent: pin.proposed.agent }] };
-        yield* this.#exec(pin.proposed, ctx, signal);
+        yield* this.#exec(pin.proposed, ctx, signal, escalation);
         await this.#checkpoints.save(ctx.runId, ctx.snapshot("running"));
+      }
+
+      // Honor a pinned escalated-input suspension: re-run the exact asking step. On the
+      // re-run, #attempt finds the now-recorded answer and feeds it to the worker (replay
+      // mode). If resume carried no answer for the awaited address, stay suspended.
+      if (pin?.kind === "input" && !ctx.has(pin.address.stepId)) {
+        if (ctx.getInput(pin.address.stepId, pin.address.askIndex) === undefined) {
+          yield { type: "suspended", reason: pin };
+          return;
+        }
+        ctx.pending = undefined;
+        if (pin.proposed) {
+          yield { type: "plan", steps: [{ id: pin.proposed.id, agent: pin.proposed.agent }] };
+          yield* this.#exec(pin.proposed, ctx, signal, escalation);
+          await this.#checkpoints.save(ctx.runId, ctx.snapshot("running"));
+        }
       }
 
       // Re-entrant planner loop. authoredPlan returns the full DAG once, then done;
@@ -194,7 +253,7 @@ export class Engine {
           if (toRun === "suspend") return; // suspended event already yielded
           if (toRun === "blocked") return; // failure events already yielded
 
-          yield* this.#exec(toRun, ctx, signal);
+          yield* this.#exec(toRun, ctx, signal, escalation);
           await this.#checkpoints.save(ctx.runId, ctx.snapshot("running"));
         }
       }
@@ -202,6 +261,12 @@ export class Engine {
       if (err instanceof RunCanceled) {
         await this.#checkpoints.save(ctx.runId, ctx.snapshot("canceled"));
         yield { type: "canceled" };
+        return;
+      }
+      if (err instanceof EscalationSuspend) {
+        const pending = { kind: "input" as const, address: err.address, prompt: err.prompt, proposed: err.proposed };
+        await this.#checkpoints.save(ctx.runId, ctx.snapshot("suspended", { pending }));
+        yield { type: "suspended", reason: pending };
         return;
       }
       const error = err instanceof StepFailed ? err.error : toRpcError(err);
@@ -265,7 +330,7 @@ export class Engine {
   /** Execute one step with bounded retry + fallback, streaming its activity as events.
    *  Tries each candidate agent (primary, then fallbacks) up to its attempt budget;
    *  only transient failures retry, others move straight to the next candidate. */
-  async *#exec(step: Step, ctx: RunContext, signal: AbortSignal | undefined): AsyncGenerator<EngineEvent> {
+  async *#exec(step: Step, ctx: RunContext, signal: AbortSignal | undefined, escalation: EscalationPolicy): AsyncGenerator<EngineEvent> {
     const policy = resolveRetry(this.#retry, step.retry, this.#retryable);
     const candidates = [step.agent, ...(step.fallback ?? [])];
     let lastError: RpcError | undefined;
@@ -279,12 +344,13 @@ export class Engine {
       for (let attempt = 1; attempt <= policy.maxAttempts; attempt++) {
         if (signal?.aborted) throw new RunCanceled();
         try {
-          const parts = yield* this.#attempt(step, agent, ctx, signal, policy.timeoutMs);
+          const parts = yield* this.#attempt(step, agent, ctx, signal, policy.timeoutMs, escalation);
           ctx.set(step.id, parts);
           yield { type: "step-completed", stepId: step.id, parts };
           return;
         } catch (err) {
           if (err instanceof RunCanceled) throw err;
+          if (err instanceof EscalationSuspend) throw err; // suspend, not a step failure
           const error = err instanceof StepFailed ? err.error : toRpcError(err);
           lastError = error;
           const isLast = attempt >= policy.maxAttempts;
@@ -311,6 +377,7 @@ export class Engine {
     ctx: RunContext,
     signal: AbortSignal | undefined,
     timeoutMs: number | undefined,
+    escalation: EscalationPolicy,
   ): AsyncGenerator<EngineEvent, Part[]> {
     const client = this.#registry.client(agentName);
 
@@ -328,6 +395,9 @@ export class Engine {
 
     // A per-attempt timeout cancels the child and is surfaced as a (retryable) timeout.
     let timedOut = false;
+    // Count requestInput calls within this step so multi-turn asks address distinctly,
+    // and so a replay-resume feeds each turn its previously-recorded answer in order.
+    let askIndex = 0;
     const timer =
       timeoutMs !== undefined && timeoutMs > 0
         ? setTimeout(() => {
@@ -349,14 +419,33 @@ export class Engine {
         else if (ev.type === "message") yield { type: "message", stepId: step.id, delta: ev.delta };
         else if (ev.type === "artifact") yield { type: "artifact", stepId: step.id, artifact: ev.artifact };
         else if (ev.type === "status" && ev.state === "input-required") {
-          // A sub-agent asking for input would otherwise hang this loop forever (the SDK
-          // event stream only closes on a terminal state). Fail fast and cancel the child.
-          // Deferred: bridging child input upward (durable, cross-process) — see DESIGN.md.
+          // A delegated agent escalated a required decision to us (its caller). The SDK
+          // stream stays open in input-required, so we can answer and continue.
+          const recorded = ctx.getInput(step.id, askIndex);
+          if (recorded) {
+            // Replaying after a durable suspend: feed the answer given on resume.
+            await client.provideInput(task.id, recorded);
+            askIndex++;
+            continue;
+          }
+          const decision = await escalation({ stepId: step.id, askIndex, prompt: ev.prompt, ctx });
+          if (decision.decision === "resolve") {
+            ctx.recordInput(step.id, askIndex, decision.answer); // persist for replay consistency
+            await client.provideInput(task.id, decision.answer);
+            askIndex++;
+            continue;
+          }
+          if (decision.decision === "deny") {
+            await client.cancel(task.id).catch(() => {});
+            throw new StepFailed({
+              code: JsonRpcCodes.InvalidParams,
+              message: `Step "${step.id}" input denied: ${decision.reason}`,
+            });
+          }
+          // escalate: cancel the child and suspend the run durably; resume re-runs this
+          // exact step and replays the recorded answer into it (replay mode).
           await client.cancel(task.id).catch(() => {});
-          throw new StepFailed({
-            code: ErrorCodes.CapabilityNotSupported,
-            message: `Step "${step.id}" agent "${agentName}" requested input; nested input-required is not yet supported.`,
-          });
+          throw new EscalationSuspend({ stepId: step.id, askIndex }, step, ev.prompt);
         }
         // result/error are read authoritatively from the final task below.
       }

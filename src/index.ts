@@ -14,7 +14,8 @@ export { asAgent } from "./as-agent.ts";
 export type { AsAgentOptions } from "./as-agent.ts";
 
 // Plan / step model
-export type { Plan, Step, Binding, EngineEvent, Snapshot, RunStatus, Pending } from "./types.ts";
+export type { Plan, Step, Binding, EngineEvent, Snapshot, RunStatus, Pending, InputAddress } from "./types.ts";
+export { inputKey } from "./types.ts";
 
 // Seams the product injects
 export { AgentRegistry } from "./registry.ts";
@@ -27,6 +28,9 @@ export { ScriptedDecider, partsToText } from "./model.ts";
 export type { Decider, Decision, Action, DecisionRequest, Observation, AgentChoice } from "./model.ts";
 export { allowAll, approveWhen } from "./governor.ts";
 export type { Governor, GovernorDecision } from "./governor.ts";
+// Escalation: the engine as decider over a delegated agent's required-decision request.
+export { escalateAll, resolveWith } from "./escalation.ts";
+export type { EscalationPolicy, EscalationDecision, EscalationRequest } from "./escalation.ts";
 export { InMemoryCheckpointStore } from "./checkpoint.ts";
 export type { CheckpointStore } from "./checkpoint.ts";
 export { defaultRetryable, resolveRetry, computeBackoff, DEFAULT_RETRY } from "./retry.ts";

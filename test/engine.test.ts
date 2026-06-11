@@ -9,6 +9,8 @@ import {
   dynamicPlanner,
   ScriptedDecider,
   approveWhen,
+  resolveWith,
+  inputKey,
   InMemoryCheckpointStore,
 } from "../src/index.ts";
 import type { EngineEvent, Step } from "../src/index.ts";
@@ -194,21 +196,79 @@ test("#1 durable approval pins the reviewed step against planner drift", async (
   assert.equal(textOf(result.parts).trim(), "HELLO");
 });
 
-test("#2 a sub-agent requesting input fails fast instead of hanging", { timeout: 5000 }, async () => {
-  const asker = defineAgent({
-    descriptor: { id: "t.ask", name: "Asker", version: "1.0.0", capabilities: [{ id: "a", description: "asks" }] },
-    async handle(_g, ctx) {
-      const more = await ctx.requestInput([{ kind: "text", text: "need more" }]);
-      return [{ kind: "text", text: textOf(more) }];
-    },
-  });
-  const reg = new AgentRegistry({ asker: inProcess(asker) });
-  const engine = new Engine({ registry: reg, planner: authoredPlan([{ id: "a", agent: "asker", input: [{ from: "goal" }] }]) });
+// A worker that escalates a required decision (calls requestInput) once before finishing.
+const askerDef = defineAgent({
+  descriptor: { id: "t.ask", name: "Asker", version: "1.0.0", capabilities: [{ id: "a", description: "asks" }] },
+  async handle(g, ctx) {
+    const more = await ctx.requestInput([{ kind: "text", text: "need more" }]);
+    return [{ kind: "text", text: `${textOf(g)}+${textOf(more)}` }];
+  },
+});
+const askerPlan = [{ id: "a", agent: "asker", input: [{ from: "goal" as const }] }];
 
-  const events = await collect(engine.run(goal("hi"), { runId: "in1" }));
+test("#2 escalated input suspends durably, then replays the answer on resume", { timeout: 5000 }, async () => {
+  const reg = new AgentRegistry({ asker: inProcess(askerDef) });
+  const checkpoints = new InMemoryCheckpointStore();
+  const engine = new Engine({ registry: reg, planner: authoredPlan(askerPlan), checkpoints });
+
+  // Default policy = escalateAll → the run suspends with the worker's prompt + address.
+  const first = await collect(engine.run(goal("hi"), { runId: "in1" }));
+  const susp = first.find((e) => e.type === "suspended");
+  assert.ok(susp && susp.type === "suspended" && susp.reason.kind === "input");
+  assert.equal((susp as any).reason.address.stepId, "a");
+  assert.equal((susp as any).reason.address.askIndex, 0);
+  assert.equal(textOf((susp as any).reason.prompt), "need more");
+  assert.ok(!first.some((e) => e.type === "result"));
+  assert.equal((await checkpoints.load("in1"))?.status, "suspended");
+
+  // Fresh Engine, same store: provide the answer → step re-runs and the answer is fed in.
+  const engine2 = new Engine({ registry: reg, planner: authoredPlan(askerPlan), checkpoints });
+  const second = await collect(
+    engine2.provideInput("in1", [{ kind: "text", text: "here" }], { stepId: "a" }),
+  );
+  const result = second.find((e) => e.type === "result");
+  assert.ok(result && result.type === "result");
+  assert.equal(textOf(result.parts).trim(), "hi+here");
+});
+
+test("#2b an escalation policy can resolve inline without suspending", { timeout: 5000 }, async () => {
+  const reg = new AgentRegistry({ asker: inProcess(askerDef) });
+  const engine = new Engine({
+    registry: reg,
+    planner: authoredPlan(askerPlan),
+    escalation: resolveWith([{ kind: "text", text: "auto" }]),
+  });
+  const events = await collect(engine.run(goal("hi"), { runId: "in2" }));
+  assert.ok(!events.some((e) => e.type === "suspended"));
+  const result = events.find((e) => e.type === "result");
+  assert.ok(result && result.type === "result");
+  assert.equal(textOf(result.parts).trim(), "hi+auto");
+});
+
+test("#2c a denied escalation fails the step", { timeout: 5000 }, async () => {
+  const reg = new AgentRegistry({ asker: inProcess(askerDef) });
+  const engine = new Engine({
+    registry: reg,
+    planner: authoredPlan(askerPlan),
+    escalation: () => ({ decision: "deny", reason: "not allowed" }),
+  });
+  const events = await collect(engine.run(goal("hi"), { runId: "in3" }));
   assert.ok(events.some((e) => e.type === "step-failed" && (e as any).stepId === "a"));
   const err = events.find((e) => e.type === "error");
-  assert.ok(err && err.type === "error" && /input/i.test(err.error.message));
+  assert.ok(err && err.type === "error" && /denied/i.test(err.error.message));
+});
+
+test("#2d resuming without the awaited answer stays suspended", { timeout: 5000 }, async () => {
+  const reg = new AgentRegistry({ asker: inProcess(askerDef) });
+  const checkpoints = new InMemoryCheckpointStore();
+  const engine = new Engine({ registry: reg, planner: authoredPlan(askerPlan), checkpoints });
+  await collect(engine.run(goal("hi"), { runId: "in4" }));
+  // resume with no inputs → must re-suspend, not crash or finish.
+  const again = await collect(engine.resume("in4", {}));
+  assert.ok(again.some((e) => e.type === "suspended"));
+  assert.ok(!again.some((e) => e.type === "result"));
+  // inputKey is the public key shape for the inputs map / provideInput target.
+  assert.equal(inputKey("a", 0), "a#0");
 });
 
 test("#3 per-step config does not leak across steps sharing an agent", async () => {
