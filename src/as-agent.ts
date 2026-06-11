@@ -85,6 +85,26 @@ export function asAgent(opts: AsAgentOptions): AgentDefinition {
           case "artifact":
             ctx.artifact(ev.artifact.parts, ev.artifact.name);
             break;
+          case "span-start":
+            // Lossless composition: forward the inner run's spans onto the outer trace.
+            // The inner run-root (and any re-stamped child) nests under this wrapper's
+            // own root span, so a master wrapped as an agent keeps its full sub-trace
+            // instead of collapsing to flat progress text.
+            ctx.trace.forwardSpan({ type: "span-start", taskId: ctx.taskId, span: ev.span });
+            break;
+          case "span-end":
+            ctx.trace.forwardSpan({
+              type: "span-end",
+              taskId: ctx.taskId,
+              traceId: ev.traceId,
+              spanId: ev.spanId,
+              endTime: ev.endTime,
+              status: ev.status,
+              ...(ev.attributes ? { attributes: ev.attributes } : {}),
+              ...(ev.events ? { events: ev.events } : {}),
+              ...(ev.error ? { error: ev.error } : {}),
+            });
+            break;
           case "step-completed":
             ctx.progress(undefined, `✓ ${ev.stepId}`);
             break;

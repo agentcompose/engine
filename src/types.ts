@@ -1,7 +1,7 @@
 // Engine types. The plan/step model is a variable-reference DAG: a step names its
 // output, and later steps reference prior outputs as bindings. Dependencies are
 // derived from those references — there is no separate edge list to keep in sync.
-import type { Artifact, Part, AgentConfig, RpcError } from "@agentcompose/sdk";
+import type { Artifact, Part, AgentConfig, RpcError, SpanStart, SpanStatus, SpanEvent, AttrMap } from "@agentcompose/sdk";
 import type { RetryConfig } from "./retry.ts";
 
 /** How a step's input is assembled from the goal and prior step outputs. */
@@ -82,6 +82,9 @@ export interface Snapshot {
   pending?: Pending;
   result?: Part[];
   error?: RpcError;
+  /** Trace identity, persisted so a resumed run continues the same trace (same ids)
+   *  rather than starting a disconnected one. */
+  trace?: { traceId: string; rootSpanId: string };
 }
 
 /** Events streamed from a run. The orchestration-level event log. */
@@ -99,4 +102,18 @@ export type EngineEvent =
   | { type: "suspended"; reason: Pending }
   | { type: "canceled" }
   | { type: "result"; parts: Part[] }
-  | { type: "error"; error: RpcError };
+  | { type: "error"; error: RpcError }
+  // Observability plane (mirrors the SDK's span events, minus taskId since a run is the
+  // context). The engine emits a run-root span and one span per step, and re-stamps the
+  // spans streamed up by delegated agents so the whole composition is one nested trace.
+  | { type: "span-start"; span: SpanStart }
+  | {
+      type: "span-end";
+      traceId: string;
+      spanId: string;
+      endTime: number;
+      status: SpanStatus;
+      attributes?: AttrMap;
+      events?: SpanEvent[];
+      error?: RpcError;
+    };

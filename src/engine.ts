@@ -9,7 +9,7 @@
 // Scope of this implementation (the durable deterministic slice) and deferrals are
 // documented in DESIGN.md and noted inline where relevant.
 import { AgentError, JsonRpcCodes, toRpcError } from "@agentcompose/sdk";
-import type { Part, RpcError } from "@agentcompose/sdk";
+import type { Part, RpcError, SpanStatus, SpanEvent, AttrMap } from "@agentcompose/sdk";
 import type { EngineEvent, Snapshot, Step, InputAddress } from "./types.ts";
 import { inputKey } from "./types.ts";
 import { RunContext } from "./context.ts";
@@ -135,10 +135,13 @@ export class Engine {
   async *run(goal: Part[], opts: RunOptions = {}): AsyncGenerator<EngineEvent> {
     const runId = opts.runId ?? crypto.randomUUID();
     const ctx = new RunContext(runId, goal);
+    ctx.traceId = "trace_" + crypto.randomUUID().slice(0, 12);
+    ctx.rootSpanId = "span_" + crypto.randomUUID().slice(0, 12);
     // Checkpoint the initial state so a crash before step 1 is still resumable.
     await this.#checkpoints.save(runId, ctx.snapshot("running"));
     // Surface the (possibly generated) runId so the caller can resume()/snapshot() it.
     yield { type: "run-started", runId };
+    yield { type: "span-start", span: { traceId: ctx.traceId, spanId: ctx.rootSpanId, name: "run", kind: "run", startTime: Date.now() } };
     yield* this.#drive(ctx, opts);
   }
 
@@ -176,7 +179,16 @@ export class Engine {
     // Merge newly-provided answers over any already in the checkpoint, then restore.
     const mergedInputs = { ...(snap.inputs ?? {}), ...(opts.inputs ?? {}) };
     const ctx = RunContext.from({ ...snap, inputs: mergedInputs }, approved);
+    // Continue the same trace across resume; mint only if this run predates tracing.
+    if (!ctx.traceId || !ctx.rootSpanId) {
+      ctx.traceId = "trace_" + crypto.randomUUID().slice(0, 12);
+      ctx.rootSpanId = "span_" + crypto.randomUUID().slice(0, 12);
+    }
     yield { type: "run-started", runId };
+    // Re-announce the root span so a consumer that only sees the resumed stream can still
+    // build the tree; span-start is an upsert keyed by spanId, so a continued consumer
+    // simply overlays it.
+    yield { type: "span-start", span: { traceId: ctx.traceId, spanId: ctx.rootSpanId, name: "run", kind: "run", startTime: Date.now() } };
     yield* this.#drive(ctx, opts);
   }
 
@@ -234,6 +246,7 @@ export class Engine {
         if (plan.done) {
           const result = plan.result ?? [];
           await this.#checkpoints.save(ctx.runId, ctx.snapshot("completed", { result }));
+          yield this.#endSpan(ctx, ctx.rootSpanId!, "ok");
           yield { type: "result", parts: result };
           return;
         }
@@ -260,17 +273,21 @@ export class Engine {
     } catch (err) {
       if (err instanceof RunCanceled) {
         await this.#checkpoints.save(ctx.runId, ctx.snapshot("canceled"));
+        yield this.#endSpan(ctx, ctx.rootSpanId!, "unset", { events: [{ time: Date.now(), name: "canceled" }] });
         yield { type: "canceled" };
         return;
       }
       if (err instanceof EscalationSuspend) {
         const pending = { kind: "input" as const, address: err.address, prompt: err.prompt, proposed: err.proposed };
         await this.#checkpoints.save(ctx.runId, ctx.snapshot("suspended", { pending }));
+        // The root span stays open across a durable suspend — it is closed when the
+        // resumed run reaches a terminal state.
         yield { type: "suspended", reason: pending };
         return;
       }
       const error = err instanceof StepFailed ? err.error : toRpcError(err);
       await this.#checkpoints.save(ctx.runId, { ...ctx.snapshot("failed"), error });
+      yield this.#endSpan(ctx, ctx.rootSpanId!, "error", { error });
       yield { type: "error", error };
     }
   }
@@ -335,6 +352,13 @@ export class Engine {
     const candidates = [step.agent, ...(step.fallback ?? [])];
     let lastError: RpcError | undefined;
 
+    // One span per step, parented to the run. Child agents' own spans (streamed up in
+    // #attempt) re-parent under this, so a delegated worker's internal trace nests here.
+    const stepSpanId = "span_" + crypto.randomUUID().slice(0, 12);
+    yield {
+      type: "span-start",
+      span: { traceId: ctx.traceId!, spanId: stepSpanId, parentSpanId: ctx.rootSpanId, name: step.id, kind: "step", startTime: Date.now(), attributes: { "agent.id": step.agent } },
+    };
     yield { type: "step-started", stepId: step.id, agent: step.agent };
 
     for (let c = 0; c < candidates.length; c++) {
@@ -344,13 +368,22 @@ export class Engine {
       for (let attempt = 1; attempt <= policy.maxAttempts; attempt++) {
         if (signal?.aborted) throw new RunCanceled();
         try {
-          const parts = yield* this.#attempt(step, agent, ctx, signal, policy.timeoutMs, escalation);
+          const parts = yield* this.#attempt(step, agent, ctx, signal, policy.timeoutMs, escalation, stepSpanId);
           ctx.set(step.id, parts);
+          yield this.#endSpan(ctx, stepSpanId, "ok");
           yield { type: "step-completed", stepId: step.id, parts };
           return;
         } catch (err) {
-          if (err instanceof RunCanceled) throw err;
-          if (err instanceof EscalationSuspend) throw err; // suspend, not a step failure
+          // A canceled or suspended step leaves an honest 'unset' verdict (it neither
+          // succeeded nor failed); both propagate to #drive to end or suspend the run.
+          if (err instanceof RunCanceled) {
+            yield this.#endSpan(ctx, stepSpanId, "unset", { events: [{ time: Date.now(), name: "canceled" }] });
+            throw err;
+          }
+          if (err instanceof EscalationSuspend) {
+            yield this.#endSpan(ctx, stepSpanId, "unset", { events: [{ time: Date.now(), name: "suspended" }] });
+            throw err;
+          }
           const error = err instanceof StepFailed ? err.error : toRpcError(err);
           lastError = error;
           const isLast = attempt >= policy.maxAttempts;
@@ -364,8 +397,29 @@ export class Engine {
 
     // Every candidate exhausted — surface the last failure and fail the run (fail-fast).
     const error = lastError ?? { code: JsonRpcCodes.InternalError, message: `Step "${step.id}" failed.` };
+    yield this.#endSpan(ctx, stepSpanId, "error", { error });
     yield { type: "step-failed", stepId: step.id, error };
     throw new StepFailed(error);
+  }
+
+  /** Build a span-end EngineEvent for the run's trace. Centralizes the (repeated) shape
+   *  so every close site — run root, step, ingested child — stays consistent. */
+  #endSpan(
+    ctx: RunContext,
+    spanId: string,
+    status: SpanStatus,
+    opts?: { error?: RpcError; events?: SpanEvent[]; attributes?: AttrMap },
+  ): EngineEvent {
+    return {
+      type: "span-end",
+      traceId: ctx.traceId!,
+      spanId,
+      endTime: Date.now(),
+      status,
+      ...(opts?.attributes ? { attributes: opts.attributes } : {}),
+      ...(opts?.events ? { events: opts.events } : {}),
+      ...(opts?.error ? { error: opts.error } : {}),
+    };
   }
 
   /** One attempt against one agent. Streams progress; returns its result parts on
@@ -378,6 +432,7 @@ export class Engine {
     signal: AbortSignal | undefined,
     timeoutMs: number | undefined,
     escalation: EscalationPolicy,
+    stepSpanId: string,
   ): AsyncGenerator<EngineEvent, Part[]> {
     const client = this.#registry.client(agentName);
 
@@ -418,7 +473,26 @@ export class Engine {
         if (ev.type === "progress") yield { type: "progress", stepId: step.id, percent: ev.percent, message: ev.message };
         else if (ev.type === "message") yield { type: "message", stepId: step.id, delta: ev.delta };
         else if (ev.type === "artifact") yield { type: "artifact", stepId: step.id, artifact: ev.artifact };
-        else if (ev.type === "status" && ev.state === "input-required") {
+        else if (ev.type === "span-start") {
+          // Re-stamp the child's spans onto this run's trace. The child's own root span
+          // (no parent) nests under this step; its nested spans keep their parentage. The
+          // child never knows it was composed — stitching is the orchestrator's job.
+          yield {
+            type: "span-start",
+            span: { ...ev.span, traceId: ctx.traceId!, parentSpanId: ev.span.parentSpanId ?? stepSpanId },
+          };
+        } else if (ev.type === "span-end") {
+          yield {
+            type: "span-end",
+            traceId: ctx.traceId!,
+            spanId: ev.spanId,
+            endTime: ev.endTime,
+            status: ev.status,
+            ...(ev.attributes ? { attributes: ev.attributes } : {}),
+            ...(ev.events ? { events: ev.events } : {}),
+            ...(ev.error ? { error: ev.error } : {}),
+          };
+        } else if (ev.type === "status" && ev.state === "input-required") {
           // A delegated agent escalated a required decision to us (its caller). The SDK
           // stream stays open in input-required, so we can answer and continue.
           const recorded = ctx.getInput(step.id, askIndex);

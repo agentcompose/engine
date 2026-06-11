@@ -18,6 +18,10 @@ export class RunContext {
   readonly approved: Set<string>;
   /** A pending suspension restored on resume (e.g. the exact approved step to run). */
   pending?: Pending;
+  /** Trace identity for this run's observability spans. Assigned by the engine at run
+   *  start and restored on resume so the whole run is one continuous trace. */
+  traceId?: string;
+  rootSpanId?: string;
 
   constructor(
     runId: string,
@@ -72,6 +76,7 @@ export class RunContext {
       ...(this.#inputs.size ? { inputs: Object.fromEntries(this.#inputs) } : {}),
       ...(extra?.pending ? { pending: extra.pending } : {}),
       ...(extra?.result ? { result: extra.result } : {}),
+      ...(this.traceId && this.rootSpanId ? { trace: { traceId: this.traceId, rootSpanId: this.rootSpanId } } : {}),
     };
   }
 
@@ -84,6 +89,8 @@ export class RunContext {
       new Map(Object.entries(snapshot.inputs ?? {})),
     );
     ctx.pending = snapshot.pending;
+    ctx.traceId = snapshot.trace?.traceId;
+    ctx.rootSpanId = snapshot.trace?.rootSpanId;
     return ctx;
   }
 }

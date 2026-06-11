@@ -1,6 +1,6 @@
 {
   "name": "@agentcompose/engine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Headless orchestration engine for AgentCompose — turn a goal into a plan and execute it across configurable agents.",
   "type": "module",
   "license": "Apache-2.0",
@@ -42,7 +42,7 @@
     "demo:nested": "node examples/engine-as-agent.ts"
   },
   "dependencies": {
-    "@agentcompose/sdk": "^0.1.0"
+    "@agentcompose/sdk": "^0.1.2"
   },
   "devDependencies": {
     "typescript": "^5.9.0",

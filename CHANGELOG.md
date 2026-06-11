@@ -4,6 +4,25 @@ All notable changes to `@agentcompose/engine` are documented here. This project 
 to [Semantic Versioning](https://semver.org/). Pre-1.0, minor versions may introduce
 additive changes; breaking changes are avoided but possible while the contract settles.
 
+## 0.1.2 — 2026-06-11
+
+### Added
+- **Distributed tracing across the orchestration tree.** A run now emits a `run` root span
+  and one `step` span per plan step (carrying an `agent.id` attribute), and **re-stamps the
+  spans streamed up by delegated agents** onto the run's trace — so a composed run is one
+  connected, nested trace instead of disconnected per-agent fragments. `asAgent()`
+  propagates a nested engine's spans to its controller via the SDK's `forwardSpan`, so
+  tracing survives recursion across composition boundaries.
+- Trace identity persists in `Snapshot.trace` (`traceId` / `rootSpanId`), so a **resumed**
+  run (after a durable suspension) continues the *same* trace rather than starting a
+  disconnected one.
+- `EngineEvent` gains `span-start` / `span-end` variants (mirroring the SDK's span events,
+  minus `taskId` since the run is the context).
+
+### Changed
+- Requires `@agentcompose/sdk` **^0.1.2** (the new trace surface: `forwardSpan` and the
+  span event/types). Tracing is otherwise additive — existing runs are unaffected.
+
 ## 0.1.1 — 2026-06-11
 
 ### Added
