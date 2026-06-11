@@ -61,6 +61,10 @@ interface RunContext { /* working state: step outputs by id, the goal */ }
 interface CheckpointStore { save(runId, snap): Promise<void>; load(runId): Promise<Snapshot | null> }  // durable
 // cross-run memory (MemoryProvider) lands with the dynamic planner — its first consumer
 type EngineEvent = …  // the event log: plan · step-started/completed/failed · message · artifact · error
+// Handoff = result parts only. A step forwards `result.parts` (ctx stores Part[] per id);
+// `artifacts` are streamed up as events for observability but are NOT written to ctx, so
+// they are not fed to downstream steps. A file to hand onward must be a file Part in the
+// result (spec §5). No consumer needs artifact-forwarding yet (the build step is terminal).
 
 // Governance — the model proposes, the runtime decides.
 type Governor = (step: Step, ctx: RunContext) => Promise<
