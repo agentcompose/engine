@@ -138,9 +138,20 @@ run simply **re-suspends**.
 2. **Tier 2 — worker mid-flight clarify (hold-open).** Keep an expensive child parked
    in-process; `address.taskId`; continue the same stream on `provideInput`. In-process
    durability boundary documented.
-3. **Tier 3 — recursive route-down.** `address.path` stack; forward `provideInput` through
-   nested `asAgent()` engines to the parked leaf.
-4. **Tier 4 — cross-process durable mid-flight.** Deterministic-replay or self-durable
+3. **Tier 3 — recursive route-down. ✅ covered by replay.** A deep worker's escalation
+   bubbles automatically: the inner engine's `asAgent()` bridge raises the inner wrapper's
+   `input-required`, the outer engine's executor sees its child go `input-required` and
+   escalates per the *outer* policy, suspending the outer run durably. Resume replays the
+   outer step (re-runs the inner engine) and feeds the recorded answer into the inner
+   wrapper — each layer handles its own level, so no explicit `address.path` stack is
+   needed under the replay model. (`address.path` only becomes necessary for *hold-open*
+   recursion, which rides on Tier 2/4.)
+4. **Tier 2 — worker mid-flight clarify (hold-open). Deferred — no consumer yet.** Keeping
+   an expensive child parked in-process avoids repeating pre-ask work and is the *correct*
+   choice for side-effecting workers (where replay would re-run a purchase/publish). But it
+   is in-process-only and splits the run contract (a hold-open suspend must not end the
+   event stream), so it waits for a real side-effecting worker to justify it.
+5. **Tier 4 — cross-process durable mid-flight.** Deterministic-replay or self-durable
    workers; only when a real worker must survive a crash mid-clarify.
 
 ## Deferred (explicit)

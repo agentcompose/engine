@@ -4,6 +4,7 @@ import { defineAgent, inProcess } from "@agentcompose/sdk";
 import type { Part, TaskEvent } from "@agentcompose/sdk";
 import { Engine, AgentRegistry, authoredPlan, asAgent, approveWhen } from "../src/index.ts";
 
+type EngineEventLike = { type: string; [k: string]: unknown };
 const textOf = (parts: Part[]) => parts.map((p) => (p.kind === "text" ? p.text : "")).join(" ").trim();
 const goal = (t: string): Part[] => [{ kind: "text", text: t }];
 
@@ -172,4 +173,51 @@ test("asAgent: a nested worker's escalation bridges to the wrapper's input-requi
   assert.equal(final.state, "completed");
   assert.equal(textOf(final.result?.parts ?? []), "pick/B");
   await client.close();
+});
+
+test("asAgent: a deep worker's escalation suspends the OUTER run durably and resumes", async () => {
+  // inner engine: one worker that escalates mid-run.
+  const clarifier = defineAgent({
+    descriptor: { id: "t.clar2", name: "Clarifier2", version: "1.0.0", capabilities: [{ id: "c", description: "asks" }] },
+    async handle(g, ctx) {
+      const ans = await ctx.requestInput([{ kind: "text", text: "which option?" }]);
+      return [{ kind: "text", text: `${textOf(g)}/${textOf(ans)}` }];
+    },
+  });
+  const inner = inProcess(
+    asAgent({
+      descriptor: { id: "x.inner2", name: "Inner2", version: "1.0.0", capabilities: [{ id: "c", description: "asks deep" }] },
+      engine: new Engine({
+        registry: new AgentRegistry({ clar: inProcess(clarifier) }),
+        planner: authoredPlan([{ id: "a", agent: "clar", input: [{ from: "goal" }] }]),
+      }),
+    }),
+  );
+
+  // OUTER engine delegates to the inner engine-as-agent. Default escalateAll → it must
+  // SUSPEND durably (not resolve inline) when the deep worker's request bubbles up.
+  const { InMemoryCheckpointStore } = await import("../src/index.ts");
+  const checkpoints = new InMemoryCheckpointStore();
+  const outer = new Engine({
+    registry: new AgentRegistry({ inner }),
+    planner: authoredPlan([{ id: "deep", agent: "inner", input: [{ from: "goal" }] }]),
+    checkpoints,
+  });
+
+  const out: EngineEventLike[] = [];
+  for await (const ev of outer.run(goal("pick"), { runId: "rec-esc" })) out.push(ev as EngineEventLike);
+  const susp = out.find((e) => e.type === "suspended") as any;
+  assert.ok(susp, "outer run suspended");
+  assert.equal(susp.reason.kind, "input");
+  assert.equal(susp.reason.address.stepId, "deep");
+  assert.equal(textOf(susp.reason.prompt), "which option?"); // deep worker's prompt bubbled up
+  assert.equal((await checkpoints.load("rec-esc"))?.status, "suspended");
+
+  // Resume the OUTER run with the human's answer → routes down to the deep worker.
+  const out2: EngineEventLike[] = [];
+  for await (const ev of outer.provideInput("rec-esc", [{ kind: "text", text: "B" }], { stepId: "deep" }))
+    out2.push(ev as EngineEventLike);
+  const result = out2.find((e) => e.type === "result") as any;
+  assert.ok(result, "outer run completed after resume");
+  assert.equal(textOf(result.parts), "pick/B");
 });
