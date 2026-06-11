@@ -174,35 +174,62 @@ function readSSEContent(text: string): string {
 
 /**
  * Build a Decider over an OpenAI-compatible chat endpoint. Requests JSON-schema-shaped
- * structured output (with a JSON-object fallback for gateways that don't honor schema),
- * so the model — not hand-rolled prompt-scraping — produces the action.
+ * structured output, and on ANY failure of that attempt — an HTTP error, an empty body,
+ * unparseable prose, or valid JSON of the wrong shape — retries once without
+ * `response_format`, appending a forceful JSON-only instruction. This is the same
+ * cross-gateway robustness the reference workers use: some gateways reject
+ * `response_format`, ignore its property names, or (e.g. Claude via LiteLLM) return
+ * EMPTY content when streaming — hence `stream:false` on every request.
  */
 export function openAICompatibleDecider(opts: OpenAICompatibleOptions): Decider {
   const doFetch = opts.fetchImpl ?? fetch;
+  const endpoint = `${opts.baseUrl.replace(/\/$/, "")}/chat/completions`;
   return {
     async decide(req: DecisionRequest): Promise<Action> {
-      const res = await doFetch(`${opts.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },
-        body: JSON.stringify({
+      const messages = buildMessages(req, opts.system);
+      const call = async (useSchema: boolean): Promise<string> => {
+        const body: Record<string, unknown> = {
           model: opts.model,
           temperature: opts.temperature ?? 0,
-          messages: buildMessages(req, opts.system),
-          response_format: {
+          stream: false,
+          messages: useSchema
+            ? messages
+            : [
+                ...messages,
+                {
+                  role: "user",
+                  content:
+                    "Output ONLY a single JSON object for the next action, using exactly the documented keys. " +
+                    "No prose, no markdown, no code fences.",
+                },
+              ],
+        };
+        if (useSchema) {
+          body.response_format = {
             type: "json_schema",
             json_schema: { name: "engine_action", schema: ACTION_SCHEMA, strict: false },
-          },
-        }),
-      });
+          };
+        }
+        const res = await doFetch(endpoint, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${opts.apiKey}` },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const b = await res.text().catch(() => "");
+          throw new AgentError(JsonRpcCodes.InternalError, `Decider model HTTP ${res.status}: ${b.slice(0, 300)}`);
+        }
+        const content = await readContent(res);
+        if (!content) throw new AgentError(JsonRpcCodes.InternalError, "Decider model returned an empty response.");
+        return content;
+      };
 
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        throw new AgentError(JsonRpcCodes.InternalError, `Decider model HTTP ${res.status}: ${body.slice(0, 300)}`);
+      try {
+        return parseAction(await call(true));
+      } catch {
+        // Fallback for gateways that reject/ignore/empty-stream structured output.
+        return parseAction(await call(false));
       }
-
-      const content = await readContent(res);
-      if (!content) throw new AgentError(JsonRpcCodes.InternalError, "Decider model returned an empty response.");
-      return parseAction(content);
     },
   };
 }

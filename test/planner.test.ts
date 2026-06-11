@@ -148,6 +148,41 @@ test("openAICompatibleDecider parses a streamed (text/event-stream) response", a
   assert.deepEqual(action, { kind: "finish", use: undefined, text: "hi" });
 });
 
+test("openAICompatibleDecider requests stream:false and recovers when the schema call returns empty", async () => {
+  // gh/claude-via-LiteLLM: the structured (response_format) request streams empty
+  // content; the retry without response_format returns a usable action.
+  const bodies: any[] = [];
+  const fakeFetch = (async (_url: string, init: any) => {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    if (body.response_format) {
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    const content = JSON.stringify({ kind: "finish", text: "ok" });
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const decider = openAICompatibleDecider({ baseUrl: "https://gw/v1", apiKey: "k", model: "m", fetchImpl: fakeFetch });
+  const action = await decider.decide({ goal: "g", observations: [], choices: [] });
+  assert.deepEqual(action, { kind: "finish", use: undefined, text: "ok" });
+  assert.equal(bodies.length, 2, "retried once without response_format");
+  assert.equal(bodies[0].stream, false, "requests are non-streaming");
+  assert.equal(bodies[1].response_format, undefined, "retry drops response_format");
+});
+
+test("openAICompatibleDecider recovers when the schema call returns JSON of the wrong shape", async () => {
+  // Some gateways honor response_format but ignore the property names.
+  const fakeFetch = (async (_url: string, init: any) => {
+    const body = JSON.parse(init.body);
+    const content = body.response_format
+      ? JSON.stringify({ action: "call", tool: "upper" }) // valid JSON, wrong keys -> validateAction throws
+      : JSON.stringify({ kind: "call", agent: "upper", instruction: "go", use: ["goal"] });
+    return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const decider = openAICompatibleDecider({ baseUrl: "https://gw/v1", apiKey: "k", model: "m", fetchImpl: fakeFetch });
+  const action = await decider.decide({ goal: "g", observations: [], choices: [{ name: "upper", title: "Upper", description: "uppercase" }] });
+  assert.deepEqual(action, { kind: "call", agent: "upper", instruction: "go", use: ["goal"] });
+});
+
 test("dynamicPlanner tolerates a model that uses the 'GOAL' token (any case)", async () => {
   const decider = new ScriptedDecider((): Action => ({ kind: "finish", use: ["GOAL"] }));
   const reg = new AgentRegistry({ upper: inProcess(upper) });

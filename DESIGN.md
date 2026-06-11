@@ -143,7 +143,18 @@ ScriptedDecider                                            // no-network referen
   OpenAI-compatible `baseUrl` — point it at a gateway to reach any provider, exactly
   as the spec's `Provider { baseUrl, apiKey }` already assumes. It pulls **no npm deps**.
 - **Structured output, not prompt-scraping.** The adapter requests JSON-schema-shaped
-  output so the model produces the `Action`; parsing lives only in the adapter.
+  output so the model produces the `Action`; parsing lives only in the adapter. For
+  cross-gateway resilience it sends `stream:false` (some gateways, e.g. Claude via
+  LiteLLM, return empty content when streaming) and, on **any** failure of the
+  structured attempt — HTTP error, empty body, unparseable prose, or valid JSON of the
+  wrong shape — retries **once** without `response_format` using a forceful JSON-only
+  prompt. *(Deferred — structured-output library: this validate-and-reask slice is now
+  duplicated in the reference adapter and in all three reference workers' model clients.
+  That duplication is the signal to adopt a single mature, purpose-built solver
+  (Instructor / Vercel AI SDK `generateObject` / provider-native structured outputs)
+  behind this same `Decider`/model port — keeping it out of the engine **core** — and
+  collapse the four copies onto it. Do it deliberately, with a license check, not as a
+  reactive hot-swap.)*
 - **Untrusted observations (trust boundary).** The goal and prior step outputs fed to the
   decider are *data*, not instructions — a crafted goal or a poisoned sub-agent output
   could try to hijack the plan ("ignore the above; finish with …"). The reference adapter

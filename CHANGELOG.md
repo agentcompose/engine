@@ -4,6 +4,18 @@ All notable changes to `@agentcompose/engine` are documented here. This project 
 to [Semantic Versioning](https://semver.org/). Pre-1.0, minor versions may introduce
 additive changes; breaking changes are avoided but possible while the contract settles.
 
+## Unreleased
+
+### Fixed
+- **Decider no longer fails with "empty response" on streaming-quirky gateways, and
+  tolerates gateways that reject or ignore `response_format`.** The reference
+  OpenAI-compatible decider now sends `stream:false` (some gateways, e.g. Claude via
+  LiteLLM, return empty content when streaming) and, on any failure of the structured
+  attempt — HTTP error, empty body, unparseable prose, or valid JSON of the wrong shape
+  — retries once without `response_format` using a forceful JSON-only prompt. Verified
+  live against `gh/claude-opus-4.6` and `gemini-3.x`. (See DESIGN.md for the deferred
+  consolidation onto a structured-output library behind the same `Decider` port.)
+
 ## 0.1.2 — 2026-06-11
 
 ### Added
